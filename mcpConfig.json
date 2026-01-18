@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "roo-trace": {
+      "command": "node",
+      "args": ["./out/mcp-server.js"]
+    }
+  }
+}

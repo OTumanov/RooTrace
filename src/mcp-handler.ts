@@ -1,4 +1,10 @@
-import { Server, createServer } from '@modelcontextprotocol/sdk';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import {
+  ListToolsRequestSchema,
+  CallToolRequestSchema,
+  CallToolResult
+} from '@modelcontextprotocol/sdk/types.js';
 import { EventEmitter } from 'events';
 import { injectProbe } from './code-injector';
 
@@ -72,7 +78,7 @@ export class RooTraceMCPHandler {
    * Запускает MCP-сервер RooTrace
    */
   async start(): Promise<void> {
-    // Настройка инструментов MCP
+    // Настройка инструментов MCP (JSON Schema формат)
     const tools = [
       {
         name: 'read_runtime_logs',
@@ -131,122 +137,141 @@ export class RooTraceMCPHandler {
               type: 'string',
               description: 'Сообщение для пробы',
             }
-          }
+          },
+          required: ['filePath', 'lineNumber', 'probeType']
         }
       }
     ];
 
-    // Создание сервера
-    this.server = createServer({
-      name: 'RooTrace',
-      version: '1.0.0',
-      tools,
+    // Создание сервера (низкоуровневый API)
+    this.server = new Server(
+      { name: 'RooTrace', version: '1.0.0' },
+      { capabilities: { tools: {} } }
+    );
+
+    // Обработка списка инструментов
+    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+      return { tools };
     });
 
-    // Обработка инструментов
-    this.server.setRequestHandler('tools/read_runtime_logs', async (request: any) => {
-      const { sessionId } = request.params || {};
-      
-      // Если sessionId не указан, используем текущую сессию
-      if (sessionId !== undefined) {
-        // В реальной реализации здесь может быть логика работы с разными сессиями
-        // Пока что игнорируем sessionId и возвращаем логи текущей сессии
-      }
-      
-      const logs = debugSession.getLogs();
-      
-      return {
-        result: {
-          logs,
-          count: logs.length,
-          sessionId: sessionId || 'current'
+    // Обработка вызовов инструментов
+    this.server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
+      const { name, arguments: args = {} } = request.params;
+
+      switch (name) {
+        case 'read_runtime_logs': {
+          const { sessionId } = args as { sessionId?: string };
+          const logs = debugSession.getLogs();
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                logs,
+                count: logs.length,
+                sessionId: sessionId || 'current'
+              })
+            }]
+          };
         }
-      };
-    });
 
-    this.server.setRequestHandler('tools/get_debug_status', async (request: any) => {
-      const hypotheses = debugSession.getHypotheses();
-      const activeHypotheses = hypotheses.filter(h => h.status === 'active');
-      
-      return {
-        result: {
-          serverStatus: this.server ? 'active' : 'inactive',
-          activeHypotheses: activeHypotheses,
-          currentSession: 'default-session', // В реальной реализации это будет динамически определяться
-          lastUpdated: new Date().toISOString()
+        case 'get_debug_status': {
+          const hypotheses = debugSession.getHypotheses();
+          const activeHypotheses = hypotheses.filter(h => h.status === 'active');
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                serverStatus: this.server ? 'active' : 'inactive',
+                activeHypotheses,
+                currentSession: 'default-session',
+                lastUpdated: new Date().toISOString()
+              })
+            }]
+          };
         }
-      };
-    });
 
-    this.server.setRequestHandler('tools/clear_session', async (request: any) => {
-      const { sessionId } = request.params || {};
-      
-      // Если sessionId не указан, очищаем текущую сессию
-      if (sessionId !== undefined) {
-        // В реальной реализации здесь может быть логика работы с разными сессиями
-        // Пока что игнорируем sessionId и очищаем текущую сессию
-      }
-      
-      debugSession.clear();
-      
-      return {
-        result: {
-          success: true,
-          message: 'Сессия отладки RooTrace успешно очищена',
-          sessionId: sessionId || 'current',
-          clearedAt: new Date().toISOString()
+        case 'clear_session': {
+          const { sessionId } = args as { sessionId?: string };
+          debugSession.clear();
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                message: 'Сессия отладки RooTrace успешно очищена',
+                sessionId: sessionId || 'current',
+                clearedAt: new Date().toISOString()
+              })
+            }]
+          };
         }
-      };
-    });
 
-    this.server.setRequestHandler('tools/inject_probes', async (request: any) => {
-      const { filePath, lineNumber, probeType, message } = request.params || {};
-      
-      // Проверяем обязательные параметры
-      if (!filePath || lineNumber === undefined || !probeType) {
-        return {
-          result: {
-            success: false,
-            error: 'Missing required parameters: filePath, lineNumber, and probeType are required',
-            errorCode: 'MISSING_PARAMETERS'
+        case 'inject_probes': {
+          const { filePath, lineNumber, probeType, message } = args as any;
+          
+          // Проверяем обязательные параметры
+          if (!filePath || lineNumber === undefined || !probeType) {
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: 'Missing required parameters: filePath, lineNumber, and probeType are required',
+                  errorCode: 'MISSING_PARAMETERS'
+                })
+              }]
+            };
           }
-        };
-      }
-      
-      // Валидируем тип пробы
-      const validProbeTypes = ['log', 'trace', 'error'];
-      if (!validProbeTypes.includes(probeType)) {
-        return {
-          result: {
-            success: false,
-            error: `Invalid probeType. Must be one of: ${validProbeTypes.join(', ')}`,
-            errorCode: 'INVALID_PROBE_TYPE'
+
+          // Валидируем тип пробы
+          const validProbeTypes = ['log', 'trace', 'error'];
+          if (!validProbeTypes.includes(probeType)) {
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: `Invalid probeType. Must be one of: ${validProbeTypes.join(', ')}`,
+                  errorCode: 'INVALID_PROBE_TYPE'
+                })
+              }]
+            };
           }
-        };
-      }
-      
-      // Вызываем реальную функцию инъекции пробы
-      const result = await injectProbe(filePath, lineNumber, probeType as 'log' | 'trace' | 'error', message);
-      
-      return {
-        result: {
-          success: result.success,
-          filePath,
-          lineNumber,
-          probeType,
-          message,
-          confirmation: result.message,
-          insertedCode: result.insertedCode
+
+          // Вызываем реальную функцию инъекции пробы
+          const result = await injectProbe(filePath, lineNumber, probeType as 'log' | 'trace' | 'error', message);
+          
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                success: result.success,
+                filePath,
+                lineNumber,
+                probeType,
+                message,
+                confirmation: result.message,
+                insertedCode: result.insertedCode
+              })
+            }]
+          };
         }
-      };
+
+        default:
+          throw new Error(`Unknown tool: ${name}`);
+      }
     });
 
-    // Запуск сервера
-    await this.server.listen({
-      port: 0, // Использовать случайный доступный порт
-    });
+    // Запуск сервера через stdio
+    const transport = new StdioServerTransport();
+    try {
+      await this.server.connect(transport);
+      console.error('RooTrace MCP server запущен');
+    } catch (error) {
+      console.error('Ошибка подключения MCP сервера:', error);
+      throw error;
+    }
     
-    console.log('RooTrace MCP server запущен');
   }
 
   /**
@@ -254,9 +279,8 @@ export class RooTraceMCPHandler {
    */
   async stop(): Promise<void> {
     if (this.server) {
-      await this.server.close();
-      this.server = null;
-      console.log('RooTrace MCP server остановлен');
+      // Server не имеет метода close в stdio режиме
+      // Процесс будет завершен родительским процессом
     }
   }
 

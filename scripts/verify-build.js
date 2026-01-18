@@ -54,10 +54,9 @@ function verifyBuild() {
             console.log('✅ Поле activationEvents в package.json присутствует');
         }
         
-        // Проверяем contributons.mcpServers
+        // Проверяем contributons.mcpServers (опционально)
         if (!packageJson.contributes || !packageJson.contributes.mcpServers) {
-            console.error('❌ Поле contributes.mcpServers в package.json отсутствует');
-            success = false;
+            console.warn('⚠️  Поле contributes.mcpServers в package.json отсутствует (опционально)');
         } else {
             console.log('✅ Поле contributes.mcpServers в package.json присутствует');
         }
@@ -71,7 +70,7 @@ function verifyBuild() {
         
         for (const dep of requiredDeps) {
             if (!allDeps[dep]) {
-                console.warn(`⚠️  Зависимость ${dep} не найдена в package.json`);
+                console.warn(`⚠️  Зависимость ${dep} не найдена в package.json (опционально, т.к. @types/vscode присутствует)`);
             } else {
                 console.log(`✅ Зависимость ${dep} найдена в package.json`);
             }

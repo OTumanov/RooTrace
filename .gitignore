@@ -9,3 +9,11 @@ coverage/
 .env
 build/
 *.tsbuildinfo
+
+# Debug configuration files
+.ai_debug_config
+.ai_debug_logs.json
+.debug_port
+
+# VSCode extension builds
+*.vsix

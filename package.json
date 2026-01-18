@@ -3,6 +3,7 @@
   "displayName": "RooTrace - MCP Integration for Roo Code",
   "description": "Advanced debugging and tracing functionality with MCP integration for Roo Code",
   "version": "0.0.1",
+  "publisher": "roo-trace-dev",
   "engines": {
     "vscode": "^1.74.0"
   },
@@ -37,7 +38,15 @@
         "command": "ai-debugger.cleanup",
         "title": "Cleanup RooTrace Debug Code"
       }
-    ]
+    ],
+    "mcpServers": {
+      "roo-trace": {
+        "command": "node",
+        "args": [
+          "./out/mcp-server.js"
+        ]
+      }
+    }
   },
   "scripts": {
     "compile": "tsc -p ./",
@@ -48,7 +57,7 @@
   "devDependencies": {
     "@types/node": "^16.11.7",
     "@types/vscode": "^1.74.0",
-    "typescript": "^4.9.3"
+    "typescript": "^5.9.3"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.2"

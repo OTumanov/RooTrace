@@ -7,10 +7,9 @@ const handler = new RooTraceMCPHandler();
 async function startServer() {
   try {
     await handler.start();
-    console.log('RooTrace MCP Server started successfully');
+    console.error('RooTrace MCP Server started successfully');
     
     // Keep the process alive
-    process.stdin.resume();
   } catch (error) {
     console.error('Failed to start RooTrace MCP Server:', error);
     process.exit(1);

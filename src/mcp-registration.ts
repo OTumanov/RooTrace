@@ -3,8 +3,32 @@ import * as path from 'path';
 import * as os from 'os';
 import * as vscode from 'vscode';
 
+export async function detectInstalledExtension(): Promise<'roo-code' | 'roo-cline' | null> {
+  try {
+    const extensions = vscode.extensions.all;
+    
+    // Проверяем наличие расширений Roo Code и Roo Cline
+    const rooCodeExtension = extensions.find(ext => ext.id.toLowerCase().includes('roo-code'));
+    const rooClineExtension = extensions.find(ext => ext.id.toLowerCase().includes('roo-cline'));
+    
+    if (rooClineExtension) {
+      return 'roo-cline';
+    } else if (rooCodeExtension) {
+      return 'roo-code';
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('Ошибка при детектировании расширения:', error);
+    return null;
+  }
+}
+
 export async function registerMcpServer(context: any): Promise<void> {
   try {
+    const installedExtension = await detectInstalledExtension();
+    console.log(`Обнаружено установленное расширение: ${installedExtension}`);
+    
     // Use .roo/mcp.json in the workspace root
     const workspaceRoot = vscode.workspace.rootPath || os.homedir();
     const configDirPath = path.join(workspaceRoot, '.roo');
@@ -22,8 +46,8 @@ export async function registerMcpServer(context: any): Promise<void> {
       config = JSON.parse(configFileContent);
     }
 
-    // Путь к mcp-server.js относительно директории расширения
-    const mcpServerPath = path.join(context.extensionPath, 'out', 'mcp-server.js');
+    // Абсолютный путь к mcp-server.js в директории расширения
+    const mcpServerPath = path.resolve(context.extensionPath, 'out', 'mcp-server.js');
 
     // Проверяем, существует ли файл сервера
     if (!fs.existsSync(mcpServerPath)) {
@@ -31,97 +55,123 @@ export async function registerMcpServer(context: any): Promise<void> {
       return;
     }
 
-    // Конфигурация RooTrace в формате MCP
-    const rooTraceServer = {
-      name: 'roo-trace',
-      description: 'RooTrace MCP Server for debugging and tracing',
-      handler: {
-        type: 'stdio',
+    // Логирование информации о создании конфигурации
+    console.log(`Создание конфигурации MCP сервера в: ${configFilePath}`);
+    console.log(`Путь к MCP серверу: ${mcpServerPath}`);
+
+    if (installedExtension === 'roo-cline') {
+      // Формат для Roo Cline: {"mcpServers": {"roo-trace": {"command": "node", "args": [...]}}}
+      if (!config.mcpServers) {
+        config.mcpServers = {};
+      }
+
+      config.mcpServers['roo-trace'] = {
         command: 'node',
-        args: [mcpServerPath]
-      },
-      tools: [
-        {
-          name: 'read_runtime_logs',
-          description: 'Получает логи отладочной сессии RooTrace',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              sessionId: {
-                type: 'string',
-                description: 'ID сессии для получения логов (если не указан, возвращаются логи текущей сессии)'
+        args: [mcpServerPath],
+        alwaysAllow: [
+          'read_runtime_logs',
+          'get_debug_status',
+          'clear_session',
+          'inject_probes'
+        ]
+      };
+    } else {
+      // Формат для Roo Code: {"servers": [...]}
+      // Конфигурация RooTrace в формате MCP
+      const rooTraceServer = {
+        name: 'roo-trace',
+        description: 'RooTrace MCP Server for debugging and tracing',
+        handler: {
+          type: 'stdio',
+          command: 'node',
+          args: [mcpServerPath]
+        },
+        tools: [
+          {
+            name: 'read_runtime_logs',
+            description: 'Получает логи отладочной сессии RooTrace',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                sessionId: {
+                  type: 'string',
+                  description: 'ID сессии для получения логов (если не указан, возвращаются логи текущей сессии)'
+                }
               }
             }
-          }
-        },
-        {
-          name: 'get_debug_status',
-          description: 'Возвращает статус сервера (активен/не активен), список активных гипотез и текущую сессию',
-          inputSchema: {
-            type: 'object',
-            properties: {}
-          }
-        },
-        {
-          name: 'clear_session',
-          description: 'Очищает сессию отладки RooTrace, сбрасывает все гипотезы и логи',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              sessionId: {
-                type: 'string',
-                description: 'ID сессии для очистки (если не указан, очищается текущая сессия)'
+          },
+          {
+            name: 'get_debug_status',
+            description: 'Возвращает статус сервера (активен/не активен), список активных гипотез и текущую сессию',
+            inputSchema: {
+              type: 'object',
+              properties: {}
+            }
+          },
+          {
+            name: 'clear_session',
+            description: 'Очищает сессию отладки RooTrace, сбрасывает все гипотезы и логи',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                sessionId: {
+                  type: 'string',
+                  description: 'ID сессии для очистки (если не указан, очищается текущая сессия)'
+                }
               }
             }
+          },
+          {
+            name: 'inject_probes',
+            description: 'Инъекция проб в код для дополнительной отладочной информации',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                filePath: {
+                  type: 'string',
+                  description: 'Путь к файлу для инъекции проб'
+                },
+                lineNumber: {
+                  type: 'number',
+                  description: 'Номер строки для инъекции пробы'
+                },
+                probeType: {
+                  type: 'string',
+                  enum: ['log', 'trace', 'error'],
+                  description: 'Тип пробы для инъекции'
+                },
+                message: {
+                  type: 'string',
+                  description: 'Сообщение для пробы'
+                }
+              },
+              required: ['filePath', 'lineNumber', 'probeType']
+            }
           }
-        },
-        {
-          name: 'inject_probes',
-          description: 'Инъекция проб в код для дополнительной отладочной информации',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              filePath: {
-                type: 'string',
-                description: 'Путь к файлу для инъекции проб'
-              },
-              lineNumber: {
-                type: 'number',
-                description: 'Номер строки для инъекции пробы'
-              },
-              probeType: {
-                type: 'string',
-                enum: ['log', 'trace', 'error'],
-                description: 'Тип пробы для инъекции'
-              },
-              message: {
-                type: 'string',
-                description: 'Сообщение для пробы'
-              }
-            },
-            required: ['filePath', 'lineNumber', 'probeType']
-          }
-        }
-      ]
-    };
+        ]
+      };
 
-    // Проверяем, существует ли уже массив servers, если нет - создаем
-    if (!config.servers) {
-      config.servers = [];
+      // Проверяем, существует ли уже массив servers, если нет - создаем
+      if (!config.servers) {
+        config.servers = [];
+      }
+
+      // Удаляем старую конфигурацию RooTrace, если она существует
+      config.servers = config.servers.filter((server: any) => server.name !== 'roo-trace');
+
+      // Добавляем новую конфигурацию RooTrace
+      config.servers.push(rooTraceServer);
     }
+// Запись обновленной конфигурации в файл
+fs.writeFileSync(configFilePath, JSON.stringify(config, null, 2));
 
-    // Удаляем старую конфигурацию RooTrace, если она существует
-    config.servers = config.servers.filter((server: any) => server.name !== 'roo-trace');
-
-    // Добавляем новую конфигурацию RooTrace
-    config.servers.push(rooTraceServer);
-
-    // Запись обновленной конфигурации в файл
-    fs.writeFileSync(configFilePath, JSON.stringify(config, null, 2));
-  } catch (error) {
-    console.error('Ошибка при регистрации MCP-сервера:', error);
-  }
+console.log(`Конфигурация MCP сервера успешно создана в: ${configFilePath}`);
+console.log(`Конфигурация: ${JSON.stringify(config, null, 2)}`);
+} catch (error) {
+console.error('Ошибка при регистрации MCP-сервера:', error);
 }
+}
+
 
 export async function unregisterMcpServer(): Promise<void> {
   try {

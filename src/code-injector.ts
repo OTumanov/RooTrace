@@ -1,4 +1,5 @@
-import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // Интерфейс для результата инъекции пробы
 interface InjectionResult {
@@ -44,32 +45,28 @@ export async function injectProbe(
       };
     }
 
-    // Получаем расширение файла для определения языка
-    const fileExtension = filePath.split('.').pop()?.toLowerCase() || '';
-    
-    // Получаем URI файла
-    const fileUri = vscode.Uri.file(filePath);
-    
     // Проверяем, существует ли файл
-    try {
-      await vscode.workspace.fs.stat(fileUri);
-    } catch (error) {
+    if (!fs.existsSync(filePath)) {
       return {
         success: false,
         message: `File does not exist: ${filePath}`
       };
     }
-    
-    // Открываем документ
-    const document = await vscode.workspace.openTextDocument(fileUri);
+
+    // Читаем содержимое файла
+    const fileContent = await fs.promises.readFile(filePath, 'utf8');
+    const lines = fileContent.split('\n');
     
     // Проверяем, что номер строки допустим
-    if (lineNumber < 1 || lineNumber > document.lineCount) {
+    if (lineNumber < 1 || lineNumber > lines.length) {
       return {
         success: false,
-        message: `Line number ${lineNumber} is out of range. Document has ${document.lineCount} lines.`
+        message: `Line number ${lineNumber} is out of range. Document has ${lines.length} lines.`
       };
     }
+
+    // Получаем расширение файла для определения языка
+    const fileExtension = filePath.split('.').pop()?.toLowerCase() || '';
     
     // Генерируем код пробы для конкретного языка
     const language = getLanguageFromFileExtension(fileExtension);
@@ -81,32 +78,19 @@ export async function injectProbe(
         message: `Unsupported file type: ${fileExtension}`
       };
     }
+
+    // Вставляем пробу перед указанной строкой (индексация с 0)
+    const lineIndex = lineNumber - 1;
+    const originalCode = lines[lineIndex];
     
-    // Получаем текст строки, в которую будем вставлять пробу
-    const lineIndex = lineNumber - 1; // Индексация строк начинается с 0
-    const line = document.lineAt(lineIndex);
-    
-    // Создаем редактирование
-    const edit = new vscode.WorkspaceEdit();
-    
-    // Определяем позицию для вставки
-    // Вставляем пробу перед указанной строкой
-    const position = new vscode.Position(lineIndex, 0);
-    edit.insert(fileUri, position, probeCode + '\n');
-    
-    // Применяем редактирование
-    const success = await vscode.workspace.applyEdit(edit);
-    
-    if (!success) {
-      return {
-        success: false,
-        message: 'Failed to apply code injection edit'
-      };
-    }
-    
-    // Сохраняем изменения
-    await document.save();
-    
+    // Создаем новый массив строк с вставленной пробой
+    const newLines = [...lines];
+    newLines.splice(lineIndex, 0, probeCode);
+
+    // Записываем измененное содержимое обратно в файл
+    const newContent = newLines.join('\n');
+    await fs.promises.writeFile(filePath, newContent, 'utf8');
+
     // Генерируем уникальный ID для этой пробы
     const probeId = `probe_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
@@ -115,12 +99,12 @@ export async function injectProbe(
       id: probeId,
       filePath,
       lineNumber,
-      originalCode: line.text,
+      originalCode,
       injectedCode: probeCode,
       probeType,
       message
     });
-    
+
     return {
       success: true,
       message: `Successfully injected ${probeType} probe at ${filePath}:${lineNumber}`,
@@ -151,57 +135,38 @@ export async function removeProbe(filePath: string, probeId: string): Promise<In
         message: `Probe with ID ${probeId} not found in file ${filePath}`
       };
     }
-    
-    // Получаем URI файла
-    const fileUri = vscode.Uri.file(filePath);
-    
-    // Открываем документ
-    const document = await vscode.workspace.openTextDocument(fileUri);
-    
-    // Создаем редактирование для удаления пробы
-    const edit = new vscode.WorkspaceEdit();
-    
+
+    // Читаем содержимое файла
+    const fileContent = await fs.promises.readFile(filePath, 'utf8');
+    const lines = fileContent.split('\n');
+
     // Найдем строку с пробой
     let probeLineIndex = -1;
-    for (let i = 0; i < document.lineCount; i++) {
-      const line = document.lineAt(i);
-      if (line.text.includes(probeInfo.injectedCode)) {
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes(probeInfo.injectedCode)) {
         probeLineIndex = i;
         break;
       }
     }
-    
+
     if (probeLineIndex === -1) {
       return {
         success: false,
         message: `Could not locate the probe code in the file`
       };
     }
-    
-    // Определяем диапазон для удаления
-    const startPosition = new vscode.Position(probeLineIndex, 0);
-    const endPosition = new vscode.Position(probeLineIndex + 1, 0); // Удаляем всю строку с пробой и следующую пустую строку
-    const range = new vscode.Range(startPosition, endPosition);
-    
-    // Удаляем пробу
-    edit.delete(fileUri, range);
-    
-    // Применяем редактирование
-    const success = await vscode.workspace.applyEdit(edit);
-    
-    if (!success) {
-      return {
-        success: false,
-        message: 'Failed to apply code removal edit'
-      };
-    }
-    
-    // Сохраняем изменения
-    await document.save();
-    
+
+    // Удаляем строку с пробой
+    const newLines = [...lines];
+    newLines.splice(probeLineIndex, 1);
+
+    // Записываем измененное содержимое обратно в файл
+    const newContent = newLines.join('\n');
+    await fs.promises.writeFile(filePath, newContent, 'utf8');
+
     // Удаляем информацию о пробе из реестра
     probeRegistry.delete(probeId);
-    
+
     return {
       success: true,
       message: `Successfully removed probe ${probeId} from ${filePath}`
@@ -330,19 +295,19 @@ export async function removeAllProbesFromFile(filePath: string): Promise<Injecti
     // Находим все пробы в данном файле
     const probesToRemove = Array.from(probeRegistry.entries())
       .filter(([_, probe]) => probe.filePath === filePath);
-    
+
     if (probesToRemove.length === 0) {
       return {
         success: true,
         message: `No probes found in file: ${filePath}`
       };
     }
-    
+
     // Удаляем все пробы в файле
     for (const [probeId, _] of probesToRemove) {
       await removeProbe(filePath, probeId);
     }
-    
+
     return {
       success: true,
       message: `Successfully removed ${probesToRemove.length} probes from ${filePath}`

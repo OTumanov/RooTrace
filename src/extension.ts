@@ -3,7 +3,6 @@ import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import { registerMcpServer, unregisterMcpServer } from './mcp-registration';
-import { startRooTraceMCP } from './mcp-handler';
 
 let server: http.Server | null = null;
 let port: number | null = null;
@@ -87,13 +86,8 @@ export async function activate(context: vscode.ExtensionContext) {
     // Register MCP server
     await registerMcpServer(context);
     
-    // Start MCP server
-    try {
-      await startRooTraceMCP();
-      outputChannel.appendLine('[MCP] RooTrace MCP Server started successfully');
-    } catch (error) {
-      outputChannel.appendLine(`[MCP] Failed to start RooTrace MCP Server: ${error}`);
-    }
+    // Start MCP server configuration through registerMcpServer only
+    // Roo Cline и Roo Code будут использовать конфигурацию из .roo/mcp.json
     
     context.subscriptions.push(
         startCommand,
@@ -109,9 +103,6 @@ async function createAIDebugConfig() {
         return;
     }
     
-    if (!vscode.workspace.rootPath) {
-        return;
-    }
     const configPath = path.join(vscode.workspace.rootPath, '.ai_debug_config');
     const config: AIDebugConfig = {
         url: `http://localhost:${port}/`,
@@ -149,9 +140,6 @@ function loadAIDebugConfig(): AIDebugConfig | null {
         return null;
     }
     
-    if (!vscode.workspace.rootPath) {
-        return null;
-    }
     const configPath = path.join(vscode.workspace.rootPath, '.ai_debug_config');
     
     if (!fs.existsSync(configPath)) {
@@ -727,10 +715,6 @@ function savePortToFile(port: number) {
         return;
     }
     
-    if (!vscode.workspace.rootPath) {
-        outputChannel.appendLine('No workspace opened. Cannot save port file.');
-        return;
-    }
     const portFilePath = path.join(vscode.workspace.rootPath, '.debug_port');
     fs.writeFileSync(portFilePath, port.toString(), 'utf8');
     outputChannel.appendLine(`Port ${port} saved to ${portFilePath}`);
@@ -741,9 +725,6 @@ function removePortFile() {
         return;
     }
     
-    if (!vscode.workspace.rootPath) {
-        return;
-    }
     const portFilePath = path.join(vscode.workspace.rootPath, '.debug_port');
     if (fs.existsSync(portFilePath)) {
         fs.unlinkSync(portFilePath);
@@ -756,9 +737,6 @@ function removeAIDebugConfig() {
         return;
     }
     
-    if (!vscode.workspace.rootPath) {
-        return;
-    }
     const configPath = path.join(vscode.workspace.rootPath, '.ai_debug_config');
     if (fs.existsSync(configPath)) {
         fs.unlinkSync(configPath);
