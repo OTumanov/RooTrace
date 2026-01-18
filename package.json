@@ -1,0 +1,56 @@
+{
+  "name": "RooTrace",
+  "displayName": "RooTrace - MCP Integration for Roo Code",
+  "description": "Advanced debugging and tracing functionality with MCP integration for Roo Code",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:roo-code.setRoleDebugger",
+    "workspaceContains:.ai_debug_config"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "rooTrace.startServer",
+        "title": "Start RooTrace Server"
+      },
+      {
+        "command": "rooTrace.stopServer",
+        "title": "Stop RooTrace Server"
+      },
+      {
+        "command": "debugSidecar.clearLogs",
+        "title": "Clear AI Debugger Logs"
+      },
+      {
+        "command": "ai-debugger.openDashboard",
+        "title": "Open RooTrace Dashboard"
+      },
+      {
+        "command": "ai-debugger.cleanup",
+        "title": "Cleanup RooTrace Debug Code"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test:mcp": "node scripts/test-mcp-integration.js",
+    "verify": "node scripts/verify-build.js"
+  },
+  "devDependencies": {
+    "@types/node": "^16.11.7",
+    "@types/vscode": "^1.74.0",
+    "typescript": "^4.9.3"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.2"
+  }
+}
