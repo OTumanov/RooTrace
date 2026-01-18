@@ -1,8 +1,9 @@
-import * as vscode from 'vscode';
+ import * as vscode from 'vscode';
 import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import { registerMcpServer, unregisterMcpServer } from './mcp-registration';
+import { RoleManager } from './role-manager';
 
 let server: http.Server | null = null;
 let port: number | null = null;
@@ -82,12 +83,21 @@ export async function activate(context: vscode.ExtensionContext) {
     // Start server automatically on activation and create config file
     await startServer();
     await createAIDebugConfig();
-    
     // Register MCP server
     await registerMcpServer(context);
     
     // Start MCP server configuration through registerMcpServer only
     // Roo Cline и Roo Code будут использовать конфигурацию из .roo/mcp.json
+    
+    // Синхронизируем роль с Roo Code
+    await RoleManager.syncRoleWithRoo(context);
+
+    // Опционально: следим за открытием новых папок (для Multi-root воркспейсов)
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeWorkspaceFolders(async () => {
+            await RoleManager.syncRoleWithRoo(context);
+        })
+    );
     
     context.subscriptions.push(
         startCommand,
@@ -97,6 +107,7 @@ export async function activate(context: vscode.ExtensionContext) {
         cleanupCommand
     );
 }
+
 
 async function createAIDebugConfig() {
     if (!vscode.workspace.rootPath || !port) {

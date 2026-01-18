@@ -18,7 +18,7 @@ async function startServer() {
 
 // Handle process termination gracefully
 process.on('SIGINT', async () => {
-  console.log('Shutting down RooTrace MCP Server...');
+  console.error('Shutting down RooTrace MCP Server...');
   try {
     await handler.stop();
   } catch (error) {
@@ -28,7 +28,7 @@ process.on('SIGINT', async () => {
 });
 
 process.on('SIGTERM', async () => {
-  console.log('Shutting down RooTrace MCP Server...');
+  console.error('Shutting down RooTrace MCP Server...');
   try {
     await handler.stop();
   } catch (error) {

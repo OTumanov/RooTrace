@@ -205,33 +205,33 @@ export function generateProbeCode(language: string, probeType: 'log' | 'trace' |
       
     case 'python':
     case 'py':
-      return `print(f'${probePrefix}: {message}')`;
+      return `print(f'${probePrefix}: ${message}')`;
       
     case 'java':
-      return `System.out.println("${probePrefix}: " + ${message});`;
+      return `System.out.println("${probePrefix}: " + "${message}");`;
       
     case 'csharp':
     case 'cs':
-      return `Console.WriteLine("${probePrefix}: " + ${message});`;
+      return `Console.WriteLine("${probePrefix}: " + "${message}");`;
       
     case 'cpp':
     case 'c++':
-      return `std::cout << "${probePrefix}: " << ${message} << std::endl;`;
+      return `std::cout << "${probePrefix}: " << "${message}" << std::endl;`;
       
     case 'go':
-      return `fmt.Println("${probePrefix}: ", ${message})`;
+      return `fmt.Println("${probePrefix}: ", "${message}")`;
       
     case 'php':
-      return `echo "${probePrefix}: " . ${message} . "\\n";`;
+      return `echo "${probePrefix}: " . "${message}" . "\\n";`;
       
     case 'ruby':
-      return `puts "${probePrefix}: #{${message}}"`;
+      return `puts "${probePrefix}: " + "${message}"`;
       
     case 'swift':
-      return `print("${probePrefix}: \\(${message})")`;
+      return `print("${probePrefix}: \\(${message}\\)")`;
       
     case 'kotlin':
-      return `println("${probePrefix}: " + ${message})`;
+      return `println("${probePrefix}: " + "${message}")`;
       
     default:
       // Для неизвестных языков используем JavaScript как fallback
@@ -318,4 +318,10 @@ export async function removeAllProbesFromFile(filePath: string): Promise<Injecti
       message: `Error removing all probes from file: ${error instanceof Error ? error.message : String(error)}`
     };
   }
+}
+/**
+ * Функция для очистки реестра проб (только для тестов)
+ */
+export function clearProbeRegistryForTesting(): void {
+  probeRegistry.clear();
 }
