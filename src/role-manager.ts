@@ -233,7 +233,7 @@ export class RoleManager {
                 // Оставляем только последнюю (самую свежую)
                 const lastIndex = config.customModes.map((m: any, i: number) => 
                     m && typeof m === 'object' && m.slug === this.ROLE_SLUG ? i : -1
-                ).filter(i => i !== -1).pop();
+                ).filter((i: number) => i !== -1).pop();
                 if (lastIndex !== undefined) {
                     config.customModes = config.customModes.filter((m: any, i: number) => 
                         !(m && typeof m === 'object' && m.slug === this.ROLE_SLUG) || i === lastIndex
