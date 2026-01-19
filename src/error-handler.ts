@@ -134,18 +134,29 @@ export class ErrorHandler {
    */
   private logStructured(log: StructuredLogMessage): void {
     const logLine = this.formatStructuredLog(log);
+    const formattedMessage = `[${log.level.toUpperCase()}] ${logLine}`;
     
     // Логируем в консоль для MCP сервера
     if (vscode === undefined) {
-      console.error(`[${log.level.toUpperCase()}] ${logLine}`);
+      // DEBUG и INFO идут в stdout, WARN и ERROR в stderr
+      if (log.level === LogLevel.DEBUG || log.level === LogLevel.INFO) {
+        console.log(formattedMessage);
+      } else {
+        console.error(formattedMessage);
+      }
       return;
     }
 
     // Логируем в output channel для VS Code
     if (outputChannel) {
-      outputChannel.appendLine(`[${log.level.toUpperCase()}] ${logLine}`);
+      outputChannel.appendLine(formattedMessage);
     } else {
-      console.error(`[${log.level.toUpperCase()}] ${logLine}`);
+      // DEBUG и INFO идут в stdout, WARN и ERROR в stderr
+      if (log.level === LogLevel.DEBUG || log.level === LogLevel.INFO) {
+        console.log(formattedMessage);
+      } else {
+        console.error(formattedMessage);
+      }
     }
   }
 

@@ -750,6 +750,21 @@ export async function injectProbe(
     let baseIndent = indentMatch ? indentMatch[1] : '';
     let insertIndex = lineIndex;
     
+    // 🐍 PYTHON INDENTATION SAFETY: Автоматическая страховка от ошибок LLM
+    // Для Python файлов программно вычисляем отступ из строки перед вставкой
+    // и гарантируем, что baseIndent установлен правильно
+    if ((language === 'python' || language === 'py') && lineIndex >= 0 && lineIndex < lines.length) {
+      const targetLine = lines[lineIndex];
+      const targetIndentMatch = targetLine.match(/^(\s*)/);
+      const targetIndent = targetIndentMatch ? targetIndentMatch[1] : '';
+      
+      // Принудительно используем отступ целевой строки для Python
+      // Это предотвращает ошибки, когда LLM неправильно угадывает отступы
+      if (targetIndent.length > 0) {
+        baseIndent = targetIndent;
+      }
+    }
+    
     // Для Python: если целевая строка - это определение функции/метода (def),
     // нужно вставить код ВНУТРИ функции, а не перед её определением
     if ((language === 'python' || language === 'py')) {
