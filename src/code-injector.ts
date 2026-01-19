@@ -1204,7 +1204,9 @@ export function generateProbeCode(
     case 'python':
     case 'py':
       // Для Python используем urllib (встроенная библиотека) - однострочный вариант
-      return `try: import urllib.request, json; urllib.request.urlopen(urllib.request.Request('${url}', data=json.dumps({'hypothesisId': '${hId}', 'message': '${escapedMessage}', 'state': {}}).encode('utf-8'), headers={'Content-Type': 'application/json'}), timeout=0.1) except: pass`;
+      // КРИТИЧЕСКИ ВАЖНО: timeout=5.0 для тяжелых операций (IFC, многопоточность, CPU-intensive)
+      // ДОБАВЛЕНО: логирование ВСЕХ попыток в файл для диагностики (даже успешных)
+      return `try: import urllib.request, json, os; log_file = os.path.expanduser('~/.roo_probe_debug.log'); open(log_file, 'a').write(f"Probe EXECUTING: {hId} - {escapedMessage}\\n"); req = urllib.request.Request('${url}', data=json.dumps({'hypothesisId': '${hId}', 'message': '${escapedMessage}', 'state': {}}).encode('utf-8'), headers={'Content-Type': 'application/json'}); resp = urllib.request.urlopen(req, timeout=5.0); open(log_file, 'a').write(f"Probe SUCCESS: {hId} - status={resp.getcode()}\\n"); except Exception as e: log_file = os.path.expanduser('~/.roo_probe_debug.log'); open(log_file, 'a').write(f"Probe ERROR: {hId} - {type(e).__name__}: {str(e)}\\n"); pass`;
       
     case 'java':
       return `try {

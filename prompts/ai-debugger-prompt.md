@@ -352,9 +352,10 @@ try: import http.client, json, socket; conn = http.client.HTTPConnection("localh
 - ✅ **АЛЬТЕРНАТИВА (если нужна одна строка):** Используй точку с запятой, но ВСЯ проба должна быть на ОДНОЙ строке с правильным отступом, БЕЗ смешивания с другими операторами:
   ```python
   # RooTrace [id: <uuid>] H1: описание
-  try: import http.client, json, socket; conn = http.client.HTTPConnection("localhost", 51234); conn.sock = socket.create_connection(("localhost", 51234), timeout=1.0); conn.request("POST", "/", json.dumps({'hypothesisId': 'H1', 'message': '...', 'state': {}}), {'Content-Type': 'application/json'}); conn.getresponse(); conn.close() except: pass
+  try: import http.client, json, socket; conn = http.client.HTTPConnection("localhost", 51234); conn.sock = socket.create_connection(("localhost", 51234), timeout=5.0); conn.request("POST", "/", json.dumps({'hypothesisId': 'H1', 'message': '...', 'state': {}}), {'Content-Type': 'application/json'}); conn.getresponse(); conn.close() except: pass
   # RooTrace [id: <uuid>]: end
   ```
+  **КРИТИЧЕСКИ ВАЖНО:** Для IFC-парсинга, многопоточности и CPU-intensive задач используй `timeout=5.0` (НЕ 1.0, НЕ 0.1)
 - **ПРАВИЛО:** Если Pylance ругается — проблема ВСЕГДА в отступах или в том, что проба разрывает синтаксическую конструкцию. Используй Block Rewrite (полная замена функции), а не пытайся "исправить" пробу.
 
 ### 🐍 PYTHON INDENTATION STRATEGY (CRITICAL)
@@ -377,8 +378,9 @@ try: import http.client, json, socket; conn = http.client.HTTPConnection("localh
 
 Твой `probeCode` (с учетом отступа в 8 пробелов):
 ```python
-        try: import http.client, json, socket; conn = http.client.HTTPConnection("localhost", 51234); conn.sock = socket.create_connection(("localhost", 51234), timeout=1.0); conn.request("POST", "/", json.dumps({'hypothesisId': 'H1', 'message': 'pop', 'state': {}}), {'Content-Type': 'application/json'}); conn.getresponse(); conn.close() except: pass
+        try: import http.client, json, socket; conn = http.client.HTTPConnection("localhost", 51234); conn.sock = socket.create_connection(("localhost", 51234), timeout=5.0); conn.request("POST", "/", json.dumps({'hypothesisId': 'H1', 'message': 'pop', 'state': {}}), {'Content-Type': 'application/json'}); conn.getresponse(); conn.close() except: pass
 ```
+**КРИТИЧЕСКИ ВАЖНО:** Для IFC-парсинга, многопоточности и CPU-intensive задач используй `timeout=5.0` (НЕ 1.0, НЕ 0.1)
 
 **КРИТИЧЕСКИ ВАЖНО:** НЕ гадай отступы. НЕ используй "логику" (+4 пробела для if, +8 для вложенного). КОПИРУЙ их буквально из соседней строки.
 

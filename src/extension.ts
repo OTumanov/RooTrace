@@ -488,6 +488,7 @@ async function logToOutputChannel(hypothesisId: string, context: string, data: L
     }
 
     // Send to WebView Dashboard if open, or open it automatically
+    outputChannel.appendLine(`[DEBUG] Checking dashboard panel: exists=${!!panel}`);
     if (panel) {
         const logData = {
             hypothesisId,
@@ -495,8 +496,14 @@ async function logToOutputChannel(hypothesisId: string, context: string, data: L
             data,
             timestamp: runtimeLog.timestamp
         };
-        panel.webview.postMessage(logData);
-        outputChannel.appendLine(`[DEBUG] Sent log to existing dashboard: ${hypothesisId}`);
+        outputChannel.appendLine(`[DEBUG] Sending log to dashboard: ${JSON.stringify({ hypothesisId, context })}`);
+        try {
+            panel.webview.postMessage(logData);
+            outputChannel.appendLine(`[DEBUG] Sent log to existing dashboard: ${hypothesisId}`);
+        } catch (error) {
+            outputChannel.appendLine(`[ERROR] Failed to send log to dashboard: ${error}`);
+            handleError(error, 'Extension.logToOutputChannel.dashboard', { hypothesisId });
+        }
     } else {
         // Auto-open dashboard when first log arrives
         // Wait a bit to ensure log is saved to storage before opening dashboard
@@ -676,36 +683,41 @@ async function openDashboard() {
                 }
             } else if (message.command === 'testProbeCode') {
                 // Execute probe code and send result
+                outputChannel.appendLine(`[Dashboard] Received testProbeCode command: ${JSON.stringify({ hypothesisId: message.hypothesisId, probeCodeLength: (message.probeCode || '').length })}`);
                 const probeCode = message.probeCode || '';
                 const hypothesisId = message.hypothesisId || 'TEST';
                 
                 try {
                     if (probeCode.trim()) {
+                        outputChannel.appendLine(`[Dashboard] Processing probe code (${probeCode.length} chars) for hypothesis ${hypothesisId}`);
+                        
                         // Log that we're testing the probe code
                         const testLog: RuntimeLog = {
                             timestamp: new Date().toISOString(),
                             hypothesisId: hypothesisId,
-                            context: 'Probe code test - executing',
+                            context: 'Probe code test - logged for manual testing',
                             data: {
                                 probeCode: probeCode.substring(0, 500), // Limit length
-                                timestamp: new Date().toISOString()
+                                probeCodeLength: probeCode.length,
+                                timestamp: new Date().toISOString(),
+                                note: 'This probe code was logged. Copy and execute it in your Python environment to test if it sends logs to the server.'
                             }
                         };
                         await sharedStorage.addLog(testLog);
+                        outputChannel.appendLine(`[Dashboard] Probe code logged to storage: ${hypothesisId}`);
                         
                         // Try to execute Python probe code via HTTP request to server
                         // The probe code should send HTTP POST to localhost:51234
                         // We'll create a temporary Python script and execute it
                         if (probeCode.includes('http.client') || probeCode.includes('requests') || probeCode.includes('urllib')) {
                             // This is a Python probe - we need to execute it
-                            // For now, just log it - user can test it manually
-                            outputChannel.appendLine(`[Dashboard] Python probe code received (${probeCode.length} chars). Execute it in your Python environment to test.`);
+                            outputChannel.appendLine(`[Dashboard] Python probe code detected (http.client/requests/urllib). Logged for manual testing.`);
                             
                             // Send a message back to dashboard
                             panel?.webview.postMessage({
                                 type: 'probeTestResult',
                                 success: true,
-                                message: 'Probe code logged. Execute it in your Python environment to test if it sends logs to server.',
+                                message: `Probe code logged (${probeCode.length} chars). Copy the code from the log entry below and execute it in your Python environment to test if it sends logs to the server.`,
                                 probeCode: probeCode.substring(0, 200)
                             });
                         } else {
@@ -717,6 +729,13 @@ async function openDashboard() {
                                 message: 'Unknown probe code format. Expected Python code with http.client, requests, or urllib.'
                             });
                         }
+                    } else {
+                        outputChannel.appendLine(`[Dashboard] Empty probe code received`);
+                        panel?.webview.postMessage({
+                            type: 'probeTestResult',
+                            success: false,
+                            message: 'Probe code is empty. Please enter probe code to test.'
+                        });
                     }
                 } catch (error) {
                     const errorLog: RuntimeLog = {
@@ -1240,15 +1259,15 @@ function getWebviewContent(logs: string[]): string {
 
             // Экранируем пользовательские данные для безопасности
             const safeHypothesisId = log.hypothesisId.replace(/[&<>"']/g, m => {
-                const map: { [key: string]: string } = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'};
+                const map = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'};
                 return map[m];
             });
             const safeContext = log.context.replace(/[&<>"']/g, m => {
-                const map: { [key: string]: string } = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'};
+                const map = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'};
                 return map[m];
             });
             const safeData = JSON.stringify(log.data, null, 2).replace(/[&<>"']/g, m => {
-                const map: { [key: string]: string } = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'};
+                const map = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'};
                 return map[m];
             });
             
@@ -1305,7 +1324,17 @@ function getWebviewContent(logs: string[]): string {
                 console.log('[Dashboard] Message posted successfully');
             } catch (error) {
                 console.error('[Dashboard] ERROR in sendTestLog:', error);
-                alert('Error sending test log: ' + (error instanceof Error ? error.message : String(error)));
+                const errorMsg = error instanceof Error ? error.message : String(error);
+                console.error('[Dashboard] Error details:', errorMsg);
+                // Show error in dashboard
+                const logsContainer = document.getElementById('logsContainer');
+                if (logsContainer) {
+                    const errorDiv = document.createElement('div');
+                    errorDiv.style.cssText = 'padding: 8px; background-color: var(--vscode-editorError-foreground); color: var(--vscode-editor-background); border-radius: 4px; margin-bottom: 8px;';
+                    errorDiv.textContent = 'Error sending test log: ' + errorMsg;
+                    logsContainer.insertBefore(errorDiv, logsContainer.firstChild);
+                    setTimeout(() => errorDiv.remove(), 5000);
+                }
             }
         }
 
@@ -1326,7 +1355,16 @@ function getWebviewContent(logs: string[]): string {
                 console.log('[Dashboard] Probe code length:', probeCode.length, 'hypothesisId:', hypothesisId);
             
                 if (!probeCode.trim()) {
-                    alert('Please enter probe code to test');
+                    console.warn('[Dashboard] Probe code is empty');
+                    // Show message in dashboard instead of alert
+                    const logsContainer = document.getElementById('logsContainer');
+                    if (logsContainer) {
+                        const errorMsg = document.createElement('div');
+                        errorMsg.style.cssText = 'padding: 8px; background-color: var(--vscode-editorError-foreground); color: var(--vscode-editor-background); border-radius: 4px; margin-bottom: 8px;';
+                        errorMsg.textContent = 'Please enter probe code to test';
+                        logsContainer.insertBefore(errorMsg, logsContainer.firstChild);
+                        setTimeout(() => errorMsg.remove(), 3000);
+                    }
                     return;
                 }
             
@@ -1350,7 +1388,17 @@ function getWebviewContent(logs: string[]): string {
                 }
             } catch (error) {
                 console.error('[Dashboard] ERROR in testProbeCode:', error);
-                alert('Error testing probe code: ' + (error instanceof Error ? error.message : String(error)));
+                const errorMsg = error instanceof Error ? error.message : String(error);
+                console.error('[Dashboard] Error details:', errorMsg);
+                // Show error in dashboard
+                const logsContainer = document.getElementById('logsContainer');
+                if (logsContainer) {
+                    const errorDiv = document.createElement('div');
+                    errorDiv.style.cssText = 'padding: 8px; background-color: var(--vscode-editorError-foreground); color: var(--vscode-editor-background); border-radius: 4px; margin-bottom: 8px;';
+                    errorDiv.textContent = 'Error testing probe code: ' + errorMsg;
+                    logsContainer.insertBefore(errorDiv, logsContainer.firstChild);
+                    setTimeout(() => errorDiv.remove(), 5000);
+                }
             }
         }
     </script>
@@ -1565,7 +1613,12 @@ async function startServer() {
             return;
         }
         
+        // Log all incoming requests for debugging
+        outputChannel.appendLine(`[HTTP SERVER] ${req.method} ${req.url} from ${req.socket.remoteAddress || 'unknown'}`);
+        
         if (req.method === 'POST' && req.url === '/') {
+            outputChannel.appendLine(`[HTTP SERVER] POST request received on /`);
+            console.log(`[HTTP SERVER] POST request received on /`);
             let body = '';
             
             req.on('data', (chunk: Buffer | string) => {
@@ -1574,7 +1627,10 @@ async function startServer() {
             
             req.on('end', async () => {
                 try {
+                    outputChannel.appendLine(`[HTTP SERVER] Request body received: ${body.length} bytes`);
+                    
                     const data = JSON.parse(body) as LogDataRequest;
+                    outputChannel.appendLine(`[HTTP SERVER] Parsed JSON: hypothesisId=${data.hypothesisId}, message=${data.message}`);
                     
                     // Check if this is a hypothesis-driven debug request
                     if (data.hypothesisId && data.message) {
@@ -1584,12 +1640,14 @@ async function startServer() {
                         
                         // КРИТИЧЕСКИ ВАЖНО: Логируем в output channel для диагностики
                         outputChannel.appendLine(`[HTTP SERVER] Received log: hypothesisId=${data.hypothesisId}, message=${context}`);
+                        console.log(`[HTTP SERVER] Received log: hypothesisId=${data.hypothesisId}, message=${context}`);
                         
                         await logToOutputChannel(data.hypothesisId, context, state);
                         
                         // Дополнительная диагностика: проверяем, что лог записался
                         const logsAfter = await sharedStorage.getLogs();
                         outputChannel.appendLine(`[HTTP SERVER] Logs count after write: ${logsAfter.length}`);
+                        console.log(`[HTTP SERVER] Logs count after write: ${logsAfter.length}`);
                     } else {
                         // Legacy format - log as-is
                         logInfo('Received debug data (legacy format)', 'Extension.startServer', { data });
@@ -1638,7 +1696,11 @@ async function startServer() {
             const address = server?.address();
             if (address && typeof address !== 'string') {
                 port = address.port;
-                logInfo(`Debug sidecar server started on port ${port}${attemptPort !== port ? ` (configured port ${attemptPort} was busy)` : ''}`, 'Extension.startServer');
+                const message = `Debug sidecar server started on port ${port}${attemptPort !== port ? ` (configured port ${attemptPort} was busy)` : ''}`;
+                logInfo(message, 'Extension.startServer');
+                outputChannel.appendLine(`[HTTP SERVER] ${message}`);
+                outputChannel.appendLine(`[HTTP SERVER] Server listening on http://localhost:${port}/`);
+                console.log(`[HTTP SERVER] Server started on port ${port}`);
                 
                 // Save port to file in workspace root (for backwards compatibility)
                 if (port !== null) {
@@ -1646,6 +1708,9 @@ async function startServer() {
                     
                     // Create the AI debug config file
                     createAIDebugConfig();
+                    
+                    outputChannel.appendLine(`[HTTP SERVER] Port ${port} saved to .debug_port file`);
+                    outputChannel.appendLine(`[HTTP SERVER] Config saved to .ai_debug_config with URL: http://localhost:${port}/`);
                 }
             } else {
                 handleWarning('Failed to get server address', 'Extension.startServer');
