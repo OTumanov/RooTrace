@@ -243,8 +243,15 @@ export class RoleManager {
             }
 
             // Записываем файл атомарно
+            // ВАЖНО: Этот файл автогенерируется из prompts/ai-debugger-prompt.md
+            // НЕ РЕДАКТИРУЙТЕ .roomodes вручную! Все изменения делайте в ai-debugger-prompt.md
             const yamlContent = yaml.dump(config, { indent: 2 });
-            fs.writeFileSync(roomodesPath, yamlContent, 'utf8');
+            const headerComment = `# ⚠️ АВТОГЕНЕРИРУЕМЫЙ ФАЙЛ - НЕ РЕДАКТИРУЙТЕ ВРУЧНУЮ!
+# Этот файл создается автоматически из prompts/ai-debugger-prompt.md
+# Все изменения делайте в ai-debugger-prompt.md, затем перезапустите расширение
+
+`;
+            fs.writeFileSync(roomodesPath, headerComment + yamlContent, 'utf8');
         const successMsg = `[RooTrace] Role 'AI Debugger' successfully updated in .roomodes`;
         console.log(successMsg);
     } catch (err) {

@@ -68,12 +68,20 @@ async function registerMcpServerForWorkspace(context: any, workspacePath: string
     let config: any = {};
     try {
       const configFileContent = await fs.promises.readFile(configFilePath, 'utf-8');
-      config = JSON.parse(configFileContent);
+      // Если файл пустой или содержит только пробелы, считаем его пустым объектом
+      const trimmedContent = configFileContent.trim();
+      if (trimmedContent === '') {
+        config = {};
+      } else {
+        config = JSON.parse(trimmedContent);
+      }
     } catch (error) {
-      // Файл не существует - это нормально для новой конфигурации
-      if (error instanceof Error && !error.message.includes('ENOENT')) {
+      // Файл не существует или содержит невалидный JSON - это нормально для новой конфигурации
+      if (error instanceof Error && !error.message.includes('ENOENT') && !error.message.includes('Unexpected end of JSON input')) {
         throw error;
       }
+      // Если файл пустой или невалидный, используем пустой объект
+      config = {};
     }
 
     // Абсолютный путь к mcp-server.js в директории расширения

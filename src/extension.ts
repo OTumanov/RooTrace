@@ -27,7 +27,8 @@ interface WebViewMessage {
   error?: string;
   hypothesisId?: string;
   context?: string;
-  data?: unknown;
+  data?: LogData;
+  probeCode?: string;
   timestamp?: string;
 }
 
@@ -180,36 +181,23 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     });
     
-    // Command to show user instructions with buttons
+    // Command to show user instructions - БЕЗ кнопок и таймеров
+    // ⚠️ КРИТИЧЕСКИ ВАЖНО: НЕ используем showInformationMessage с кнопками, так как это вызывает таймеры
+    // Вместо этого просто показываем сообщение в Output Channel и возвращаем инструкции для бота
     const showUserInstructionsCommand = vscode.commands.registerCommand('rooTrace.showUserInstructions', async (instructions: string, stepNumber?: number) => {
         const stepNum = stepNumber || 1;
-        const message = `📋 Шаг ${stepNum}: Инструментация готова!\n\n${instructions}\n\n**Что делать дальше:**\n1. Запустите код и воспроизведите ошибку\n2. Выполните действия, которые вызывают проблему\n3. После завершения работы кода нажмите одну из кнопок ниже`;
+        const message = `📋 Шаг ${stepNum}: Инструментация готова!\n\n${instructions}\n\n**Что делать дальше:**\n1. Запустите код и воспроизведите ошибку\n2. Выполните действия, которые вызывают проблему\n3. После завершения работы кода напишите в чат "Logs ready" для анализа логов\n4. Если проблема решена, напишите "Проблема устранена" для очистки сессии\n\n⚠️ ВАЖНО: Нет таймеров. Вы контролируете процесс.`;
         
-        const action = await vscode.window.showInformationMessage(
-            message,
-            'Продолжить (анализ логов)',
-            'Проблема устранена'
-        );
+        // Показываем сообщение в Output Channel вместо всплывающего окна с кнопками
+        outputChannel.appendLine(`\n${message}\n`);
+        outputChannel.show(true);
         
-        if (action === 'Продолжить (анализ логов)') {
-            // Открываем дашборд и показываем логи
-            await openDashboard();
-            outputChannel.appendLine('[USER ACTION] Пользователь готов к анализу логов');
-            // Возвращаем сигнал для бота, что пользователь готов продолжить
-            return { action: 'continue', message: 'Пользователь готов к анализу логов' };
-        } else if (action === 'Проблема устранена') {
-            try {
-                await vscode.commands.executeCommand('rooTrace.clearSession');
-                vscode.window.showInformationMessage('Сессия отладки очищена. Проблема решена!');
-                outputChannel.appendLine('[USER ACTION] Пользователь сообщил, что проблема решена');
-                return { action: 'resolved', message: 'Проблема решена, сессия очищена' };
-            } catch (error) {
-                vscode.window.showErrorMessage(`Ошибка при очистке сессии: ${error}`);
-                return { action: 'error', message: `Ошибка: ${error}` };
-            }
-        }
-        
-        return { action: 'cancelled', message: 'Действие отменено' };
+        // Возвращаем инструкции для бота - он покажет их в чате БЕЗ кнопок
+        return { 
+            action: 'instructions_shown', 
+            message: 'Инструкции показаны в Output Channel. Пользователь должен написать "Logs ready" когда будет готов.',
+            instructions: message
+        };
     });
     
     // Commands for user instructions buttons (legacy, для обратной совместимости)
@@ -462,24 +450,42 @@ function formatLogEntry(hypothesisId: string, context: string, data: LogData): s
 }
 
 async function logToOutputChannel(hypothesisId: string, context: string, data: LogData) {
-    const logEntry = formatLogEntry(hypothesisId, context, data);
-    
-    // Создаем RuntimeLog и добавляем в shared storage
-    // SharedLogStorage автоматически эмитит событие 'logAdded' для WebSocket клиентов
+    // Создаем RuntimeLog ДО try блока, чтобы он был доступен везде
     const runtimeLog: RuntimeLog = {
         timestamp: new Date().toISOString(),
         hypothesisId,
         context,
         data
     };
-    await sharedStorage.addLog(runtimeLog);
     
-    // Output to channel
-    outputChannel.appendLine(logEntry);
-    outputChannel.show(true);
-    
-    // Debug: Log that we're sending to dashboard
-    outputChannel.appendLine(`[DEBUG] Log added to storage: ${hypothesisId}, dashboard panel exists: ${!!panel}`);
+    try {
+        outputChannel.appendLine(`[DEBUG] logToOutputChannel called: hypothesisId=${hypothesisId}, context=${context}`);
+        
+        const logEntry = formatLogEntry(hypothesisId, context, data);
+        
+        // Добавляем в shared storage
+        // SharedLogStorage автоматически эмитит событие 'logAdded' для WebSocket клиентов
+        outputChannel.appendLine(`[DEBUG] Calling sharedStorage.addLog...`);
+        await sharedStorage.addLog(runtimeLog);
+        outputChannel.appendLine(`[DEBUG] sharedStorage.addLog completed successfully`);
+        
+        // Проверяем, что лог действительно записался
+        const logsAfter = await sharedStorage.getLogs();
+        outputChannel.appendLine(`[DEBUG] Total logs in storage after add: ${logsAfter.length}`);
+        
+        // Output to channel
+        outputChannel.appendLine(logEntry);
+        outputChannel.show(true);
+        
+        // Debug: Log that we're sending to dashboard
+        outputChannel.appendLine(`[DEBUG] Log added to storage: ${hypothesisId}, dashboard panel exists: ${!!panel}`);
+    } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        outputChannel.appendLine(`[ERROR] Failed to log to output channel: ${errorMsg}`);
+        outputChannel.appendLine(`[ERROR] Stack: ${error instanceof Error ? error.stack : 'N/A'}`);
+        handleError(error, 'Extension.logToOutputChannel', { hypothesisId, context });
+        throw error;
+    }
 
     // Send to WebView Dashboard if open, or open it automatically
     if (panel) {
@@ -518,8 +524,9 @@ async function logToOutputChannel(hypothesisId: string, context: string, data: L
         });
     }
     
-    // Append to persistent log file
-    appendLogToFile(hypothesisId, context, data);
+    // ⚠️ УБРАНО: appendLogToFile больше не используется
+    // Логи записываются через sharedStorage.addLog -> saveToFile
+    // Дублирование записи вызывало конфликты (шифрование vs JSON)
 }
 
 /**
@@ -629,12 +636,107 @@ async function openDashboard() {
 
         panel.webview.html = getWebviewContent([]);
         
-        // Handle messages from the WebView (only clearLogs command)
-        panel.webview.onDidReceiveMessage((message: WebViewMessage) => {
+        // Handle messages from the WebView
+        panel.webview.onDidReceiveMessage(async (message: WebViewMessage) => {
+            outputChannel.appendLine(`[Dashboard] Received message from webview: ${JSON.stringify(message)}`);
+            console.log('[Dashboard] Received message from webview:', message);
+            
             if (message.command === 'clearLogs') {
                 // Clear logs from shared storage
                 sharedStorage.clear();
                 panel?.webview.postMessage({ type: 'clearLogs' });
+            } else if (message.command === 'sendTestLog') {
+                // Send test log to server
+                outputChannel.appendLine(`[Dashboard] Received sendTestLog command: ${JSON.stringify(message)}`);
+                const testLog: RuntimeLog = {
+                    timestamp: new Date().toISOString(),
+                    hypothesisId: message.hypothesisId || 'TEST',
+                    context: message.context || 'Test log from dashboard',
+                    data: message.data || { test: true, source: 'dashboard', timestamp: new Date().toISOString() }
+                };
+                outputChannel.appendLine(`[Dashboard] Creating test log: ${JSON.stringify(testLog)}`);
+                try {
+                    await sharedStorage.addLog(testLog);
+                    outputChannel.appendLine(`[Dashboard] Test log added to storage: ${testLog.hypothesisId} - ${testLog.context}`);
+                    // Send confirmation back to dashboard
+                    panel?.webview.postMessage({
+                        type: 'testLogResult',
+                        success: true,
+                        message: `Test log sent: ${testLog.hypothesisId}`,
+                        log: testLog
+                    });
+                } catch (error) {
+                    outputChannel.appendLine(`[Dashboard] ERROR adding test log: ${error}`);
+                    handleError(error, 'Extension.sendTestLog', { testLog });
+                    panel?.webview.postMessage({
+                        type: 'testLogResult',
+                        success: false,
+                        message: error instanceof Error ? error.message : String(error)
+                    });
+                }
+            } else if (message.command === 'testProbeCode') {
+                // Execute probe code and send result
+                const probeCode = message.probeCode || '';
+                const hypothesisId = message.hypothesisId || 'TEST';
+                
+                try {
+                    if (probeCode.trim()) {
+                        // Log that we're testing the probe code
+                        const testLog: RuntimeLog = {
+                            timestamp: new Date().toISOString(),
+                            hypothesisId: hypothesisId,
+                            context: 'Probe code test - executing',
+                            data: {
+                                probeCode: probeCode.substring(0, 500), // Limit length
+                                timestamp: new Date().toISOString()
+                            }
+                        };
+                        await sharedStorage.addLog(testLog);
+                        
+                        // Try to execute Python probe code via HTTP request to server
+                        // The probe code should send HTTP POST to localhost:51234
+                        // We'll create a temporary Python script and execute it
+                        if (probeCode.includes('http.client') || probeCode.includes('requests') || probeCode.includes('urllib')) {
+                            // This is a Python probe - we need to execute it
+                            // For now, just log it - user can test it manually
+                            outputChannel.appendLine(`[Dashboard] Python probe code received (${probeCode.length} chars). Execute it in your Python environment to test.`);
+                            
+                            // Send a message back to dashboard
+                            panel?.webview.postMessage({
+                                type: 'probeTestResult',
+                                success: true,
+                                message: 'Probe code logged. Execute it in your Python environment to test if it sends logs to server.',
+                                probeCode: probeCode.substring(0, 200)
+                            });
+                        } else {
+                            // Not a recognized probe format
+                            outputChannel.appendLine(`[Dashboard] Unknown probe code format`);
+                            panel?.webview.postMessage({
+                                type: 'probeTestResult',
+                                success: false,
+                                message: 'Unknown probe code format. Expected Python code with http.client, requests, or urllib.'
+                            });
+                        }
+                    }
+                } catch (error) {
+                    const errorLog: RuntimeLog = {
+                        timestamp: new Date().toISOString(),
+                        hypothesisId: 'ERROR',
+                        context: 'Probe code test error',
+                        data: {
+                            error: error instanceof Error ? error.message : String(error),
+                            probeCode: probeCode.substring(0, 200)
+                        }
+                    };
+                    await sharedStorage.addLog(errorLog);
+                    handleError(error, 'Extension.testProbeCode', { probeCode: probeCode.substring(0, 100) });
+                    
+                    panel?.webview.postMessage({
+                        type: 'probeTestResult',
+                        success: false,
+                        message: error instanceof Error ? error.message : String(error)
+                    });
+                }
             }
         });
         
@@ -902,13 +1004,77 @@ function getWebviewContent(logs: string[]): string {
             margin-bottom: 16px;
             opacity: 0.5;
         }
+
+        .test-section {
+            margin-bottom: 16px;
+            padding: 12px;
+            background-color: var(--vscode-editor-selectionBackground);
+            border-radius: 4px;
+        }
+
+        .test-section h3 {
+            margin-top: 0;
+            margin-bottom: 8px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .probe-code-input {
+            width: 100%;
+            min-height: 80px;
+            padding: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            border: 1px solid var(--vscode-input-border);
+            border-radius: 4px;
+            resize: vertical;
+            margin-bottom: 8px;
+        }
+
+        .test-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .test-controls select {
+            padding: 6px;
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            border: 1px solid var(--vscode-input-border);
+            border-radius: 4px;
+            font-family: inherit;
+            font-size: 12px;
+        }
     </style>
   </head>
   <body>
     <div class="header">
         <h1>AI Debugger Dashboard</h1>
-        <button class="clear-btn" onclick="clearLogs()">Clear Logs</button>
+        <div>
+            <button class="control-btn" onclick="sendTestLog()">Send Test Log</button>
+            <button class="clear-btn" onclick="clearLogs()">Clear Logs</button>
+        </div>
     </div>
+    
+    <div class="test-section">
+        <h3>Test Probe Code</h3>
+        <textarea id="probeCodeInput" class="probe-code-input" placeholder="Paste probe code here (e.g., try: import http.client, json, socket; conn = http.client.HTTPConnection(&quot;localhost&quot;, 51234); conn.sock = socket.create_connection((&quot;localhost&quot;, 51234), timeout=5.0); conn.request(&quot;POST&quot;, &quot;/&quot;, json.dumps({'hypothesisId': 'H1', 'message': 'test', 'state': {}}), {'Content-Type': 'application/json'}); conn.getresponse(); conn.close() except: pass"></textarea>
+        <div class="test-controls">
+            <select id="hypothesisSelect">
+                <option value="H1">H1</option>
+                <option value="H2">H2</option>
+                <option value="H3">H3</option>
+                <option value="H4">H4</option>
+                <option value="H5">H5</option>
+                <option value="TEST">TEST</option>
+            </select>
+            <button class="control-btn run-btn" onclick="testProbeCode()">Test Probe Code</button>
+        </div>
+    </div>
+    
     <div class="logs-container" id="logsContainer">
         <div class="empty-state">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -919,8 +1085,11 @@ function getWebviewContent(logs: string[]): string {
     </div>
 
     <script>
+        const vscode = acquireVsCodeApi();
         const logsContainer = document.getElementById('logsContainer');
         let hasLogs = false;
+
+        console.log('[Dashboard] Dashboard script loaded, vscode API:', !!vscode);
 
         // Listen for messages from extension
         window.addEventListener('message', event => {
@@ -933,7 +1102,7 @@ function getWebviewContent(logs: string[]): string {
                         // Handle both string format (legacy) and object format
                         if (typeof log === 'string') {
                             // Legacy format - parse string log
-                            const hypothesisMatch = log.match(/Hypothesis: (H\\d+)/);
+                            const hypothesisMatch = log.match(/Hypothesis: (H\d+)/);
                             const contextMatch = log.match(/Context: "([^"]+)"/);
                             const dataMatch = log.match(/Data: ({[^}]*})/);
                             if (hypothesisMatch && contextMatch) {
@@ -1020,6 +1189,30 @@ function getWebviewContent(logs: string[]): string {
                         timestamp: new Date().toISOString()
                     });
                 }
+            } else if (message.type === 'probeTestResult') {
+                // Show probe test result
+                addLogEntry({
+                    hypothesisId: message.success ? 'TEST' : 'ERROR',
+                    context: message.success ? 'Probe code test result' : 'Probe code test error',
+                    data: {
+                        success: message.success,
+                        message: message.message,
+                        probeCode: message.probeCode || ''
+                    },
+                    timestamp: new Date().toISOString()
+                });
+            } else if (message.type === 'testLogResult') {
+                // Show test log result
+                addLogEntry({
+                    hypothesisId: message.success ? (message.log?.hypothesisId || 'TEST') : 'ERROR',
+                    context: message.success ? 'Test log sent successfully' : 'Test log error',
+                    data: {
+                        success: message.success,
+                        message: message.message,
+                        log: message.log || {}
+                    },
+                    timestamp: new Date().toISOString()
+                });
             } else if (message.hypothesisId !== undefined) {
                 // New log entry
                 addLogEntry({
@@ -1073,8 +1266,13 @@ function getWebviewContent(logs: string[]): string {
         }
 
         function clearLogs() {
-            const vscode = acquireVsCodeApi();
-            vscode.postMessage({ command: 'clearLogs' });
+            console.log('[Dashboard] clearLogs called');
+            try {
+                vscode.postMessage({ command: 'clearLogs' });
+                console.log('[Dashboard] clearLogs message sent');
+            } catch (error) {
+                console.error('[Dashboard] ERROR in clearLogs:', error);
+            }
             logsContainer.innerHTML = \`
                 <div class="empty-state">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1084,6 +1282,76 @@ function getWebviewContent(logs: string[]): string {
                 </div>
             \`;
             hasLogs = false;
+        }
+
+        function sendTestLog() {
+            console.log('[Dashboard] sendTestLog called');
+            try {
+                const hypothesisSelect = document.getElementById('hypothesisSelect');
+                console.log('[Dashboard] hypothesisSelect element:', !!hypothesisSelect);
+                
+                const hypothesisId = hypothesisSelect ? hypothesisSelect.value : 'TEST';
+                console.log('[Dashboard] Sending test log with hypothesisId:', hypothesisId);
+                
+                const message = {
+                    command: 'sendTestLog',
+                    hypothesisId: hypothesisId,
+                    context: 'Test log from dashboard',
+                    data: { test: true, source: 'dashboard', timestamp: new Date().toISOString() }
+                };
+                console.log('[Dashboard] Posting message:', JSON.stringify(message));
+                
+                vscode.postMessage(message);
+                console.log('[Dashboard] Message posted successfully');
+            } catch (error) {
+                console.error('[Dashboard] ERROR in sendTestLog:', error);
+                alert('Error sending test log: ' + (error instanceof Error ? error.message : String(error)));
+            }
+        }
+
+        function testProbeCode() {
+            console.log('[Dashboard] testProbeCode called');
+            try {
+                const probeCodeInput = document.getElementById('probeCodeInput');
+                const hypothesisSelect = document.getElementById('hypothesisSelect');
+                
+                if (!probeCodeInput) {
+                    console.error('[Dashboard] probeCodeInput not found');
+                    return;
+                }
+                
+                const probeCode = probeCodeInput.value;
+                const hypothesisId = hypothesisSelect ? hypothesisSelect.value : 'TEST';
+                
+                console.log('[Dashboard] Probe code length:', probeCode.length, 'hypothesisId:', hypothesisId);
+            
+                if (!probeCode.trim()) {
+                    alert('Please enter probe code to test');
+                    return;
+                }
+            
+                // Send probe code to extension for testing
+                const message = {
+                    command: 'testProbeCode',
+                    probeCode: probeCode,
+                    hypothesisId: hypothesisId
+                };
+                
+                console.log('[Dashboard] Posting probe test message:', JSON.stringify({ ...message, probeCode: probeCode.substring(0, 100) + '...' }));
+                vscode.postMessage(message);
+                console.log('[Dashboard] Probe test message posted');
+            
+                // Also try to execute Python probe code directly via HTTP (if it's a simple HTTP request)
+                // This allows testing if the probe code actually sends data to server
+                if (probeCode.includes('http.client') || probeCode.includes('requests') || probeCode.includes('urllib')) {
+                    // Extract the HTTP request part and try to execute it
+                    // For Python code, we can't execute it in browser, but we can show a message
+                    console.log('[Dashboard] Python probe code detected. Extension will log it. Execute in your Python environment to test.');
+                }
+            } catch (error) {
+                console.error('[Dashboard] ERROR in testProbeCode:', error);
+                alert('Error testing probe code: ' + (error instanceof Error ? error.message : String(error)));
+            }
         }
     </script>
 </body>
@@ -1314,7 +1582,14 @@ async function startServer() {
                         const context = data.message || 'Debug data received';
                         const state = data.state || {};
                         
+                        // КРИТИЧЕСКИ ВАЖНО: Логируем в output channel для диагностики
+                        outputChannel.appendLine(`[HTTP SERVER] Received log: hypothesisId=${data.hypothesisId}, message=${context}`);
+                        
                         await logToOutputChannel(data.hypothesisId, context, state);
+                        
+                        // Дополнительная диагностика: проверяем, что лог записался
+                        const logsAfter = await sharedStorage.getLogs();
+                        outputChannel.appendLine(`[HTTP SERVER] Logs count after write: ${logsAfter.length}`);
                     } else {
                         // Legacy format - log as-is
                         logInfo('Received debug data (legacy format)', 'Extension.startServer', { data });

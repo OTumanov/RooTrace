@@ -6,10 +6,17 @@ import {
   CallToolRequestSchema,
   CallToolResult
 } from '@modelcontextprotocol/sdk/types.js';
-import { injectProbe, getAllProbes, removeAllProbesFromFile } from './code-injector';
+import { injectProbe, getAllProbes, removeAllProbesFromFile, getServerUrl } from './code-injector';
 import { SharedLogStorage, RuntimeLog, Hypothesis } from './shared-log-storage';
 import { handleError, logInfo, logDebug } from './error-handler';
 import { LogData } from './types';
+import * as path from 'path';
+import * as fs from 'fs';
+import * as http from 'http';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 // Используем shared log storage вместо изолированного debugSession
 const sharedStorage = SharedLogStorage.getInstance();
@@ -18,9 +25,111 @@ const sharedStorage = SharedLogStorage.getInstance();
 export class RooTraceMCPHandler {
   private server: Server | null = null;
   private startTime: number = Date.now();
+  private committedFiles: Set<string> = new Set(); // Трекер файлов, для которых был сделан коммит
 
   constructor() {
     // EventEmitter удален, так как не использовался
+  }
+
+  /**
+   * Проверяет, является ли файл Python файлом
+   */
+  private isPythonFile(filePath: string): boolean {
+    const ext = path.extname(filePath).toLowerCase();
+    return ext === '.py' || ext === '.pyw' || ext === '.pyi';
+  }
+
+  /**
+   * Находит корень git репозитория
+   */
+  private async findGitRoot(filePath: string): Promise<string | null> {
+    try {
+      let currentPath = path.resolve(filePath);
+      if (fs.existsSync(currentPath) && !fs.statSync(currentPath).isDirectory()) {
+        currentPath = path.dirname(currentPath);
+      } else if (!fs.existsSync(currentPath)) {
+        currentPath = path.dirname(currentPath);
+      }
+
+      const root = path.parse(currentPath).root;
+      while (currentPath !== root) {
+        const gitPath = path.join(currentPath, '.git');
+        if (fs.existsSync(gitPath)) {
+          return currentPath;
+        }
+        const parentPath = path.dirname(currentPath);
+        if (parentPath === currentPath) break;
+        currentPath = parentPath;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Проверяет, был ли сделан git commit или .bak копия перед редактированием файла
+   * Согласно промпту, коммит или .bak копия должны быть созданы ОДИН РАЗ перед первым изменением
+   */
+  private async checkGitCommitBeforeEdit(filePath: string): Promise<{ allowed: boolean; error?: string }> {
+    // Если файл уже был закоммичен/скопирован в этой сессии, разрешаем
+    if (this.committedFiles.has(filePath)) {
+      return { allowed: true };
+    }
+
+    const gitRoot = await this.findGitRoot(filePath);
+    const bakFilePath = `${filePath}.bak`;
+    const bakExists = fs.existsSync(bakFilePath);
+
+    // Если нет git репозитория - проверяем .bak копию
+    if (!gitRoot) {
+      if (bakExists) {
+        // .bak копия существует - разрешаем
+        this.committedFiles.add(filePath);
+        return { allowed: true };
+      } else {
+        // Нет ни git, ни .bak - требуем создать .bak
+        return {
+          allowed: false,
+          error: `File ${filePath} is not in a git repository and has no backup. According to protocol, you MUST create a backup copy before editing: cp "${filePath}" "${bakFilePath}". This is a safety requirement for rollback capability.`
+        };
+      }
+    }
+
+    // Есть git репозиторий - проверяем коммит
+    try {
+      // Проверяем, есть ли незакоммиченные изменения в файле
+      const relativePath = path.relative(gitRoot, filePath);
+      const { stdout } = await execAsync(`cd "${gitRoot}" && git status --porcelain "${relativePath}"`, { timeout: 5000 });
+      
+      if (stdout.trim()) {
+        // Есть изменения - требуем коммит (или .bak как альтернатива)
+        if (bakExists) {
+          // .bak копия существует - разрешаем
+          this.committedFiles.add(filePath);
+          return { allowed: true };
+        } else {
+          // Нет коммита и нет .bak - требуем одно из двух
+          return {
+            allowed: false,
+            error: `File ${relativePath} has uncommitted changes and no backup. According to protocol, you MUST either: (1) commit the file: git add . && git commit -m "AI Debugger: Pre-instrumentation backup", OR (2) create a backup copy: cp "${filePath}" "${bakFilePath}". This is a safety requirement.`
+          };
+        }
+      }
+
+      // Файл чистый - разрешаем и помечаем как закоммиченный
+      this.committedFiles.add(filePath);
+      return { allowed: true };
+    } catch (error) {
+      // If git command fails, check for .bak as fallback
+      if (bakExists) {
+        this.committedFiles.add(filePath);
+        return { allowed: true };
+      }
+      // Если git команда не работает и нет .bak, разрешаем (но логируем)
+      console.warn(`[RooTrace] Git check failed for ${filePath}:`, error);
+      return { allowed: true };
+    }
   }
 
   /**
@@ -65,7 +174,7 @@ export class RooTraceMCPHandler {
       },
       {
         name: 'inject_probes',
-        description: 'Инъекция проб в код для дополнительной отладочной информации',
+        description: 'Инъекция проб в код для дополнительной отладочной информации. ⚠️ ЗАПРЕЩЕНО для Python файлов (.py) - используйте apply_diff (Block Rewrite) вместо этого. 🛡️ ВАЖНО: Перед использованием apply_diff ОБЯЗАТЕЛЬНО создайте резервную копию: если git репозиторий - `git add . && git commit -m "AI Debugger: Pre-instrumentation backup"`, если нет git - `cp <file> <file>.bak`.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -100,7 +209,7 @@ export class RooTraceMCPHandler {
       },
       {
         name: 'inject_multiple_probes',
-        description: 'Инъекция нескольких проб в код за один вызов. Используйте этот инструмент вместо множественных вызовов inject_probes - это более эффективно и избегает проблем с вложенностью. Планируйте все пробы заранее и вставляйте их все сразу.',
+        description: 'Инъекция нескольких проб в код за один вызов. ⚠️ ЗАПРЕЩЕНО для Python файлов (.py) - используйте apply_diff (Block Rewrite) вместо этого. 🛡️ ВАЖНО: Перед использованием apply_diff ОБЯЗАТЕЛЬНО создайте резервную копию: если git репозиторий - `git add . && git commit -m "AI Debugger: Pre-instrumentation backup"`, если нет git - `cp <file> <file>.bak`. Для других языков используйте этот инструмент вместо множественных вызовов inject_probes - это более эффективно и избегает проблем с вложенностью.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -249,11 +358,44 @@ export class RooTraceMCPHandler {
           case 'get_debug_status': {
             const hypotheses = sharedStorage.getHypotheses();
             const activeHypotheses = hypotheses.filter(h => h.status === 'active');
+            
+            // КРИТИЧНО: Проверяем работоспособность сервера через тестовую запись/чтение
+            let serverStatus: 'active' | 'inactive' | 'error' = 'inactive';
+            let serverTestResult: string | null = null;
+            
+            if (this.server) {
+              try {
+                // Получаем URL сервера
+                const serverUrl = getServerUrl();
+                if (!serverUrl) {
+                  serverStatus = 'error';
+                  serverTestResult = 'Server URL not found';
+                } else {
+                  // Выполняем тестовую запись/чтение
+                  const testResult = await this.testServerWriteRead(serverUrl);
+                  if (testResult.success) {
+                    serverStatus = 'active';
+                    serverTestResult = 'Server verified: write/read test passed';
+                    logDebug('Server status check: write/read test passed', 'MCPHandler.get_debug_status');
+                  } else {
+                    serverStatus = 'error';
+                    serverTestResult = `Server test failed: ${testResult.error}`;
+                    logDebug(`Server status check failed: ${testResult.error}`, 'MCPHandler.get_debug_status');
+                  }
+                }
+              } catch (error) {
+                serverStatus = 'error';
+                serverTestResult = `Server test error: ${error instanceof Error ? error.message : String(error)}`;
+                handleError(error, 'MCPHandler.get_debug_status', { action: 'server_test' });
+              }
+            }
+            
             result = {
               content: [{
                 type: 'text',
                 text: JSON.stringify({
-                  serverStatus: this.server ? 'active' : 'inactive',
+                  serverStatus,
+                  serverTestResult,
                   activeHypotheses,
                   currentSession: 'default-session',
                   lastUpdated: new Date().toISOString(),
@@ -267,65 +409,144 @@ export class RooTraceMCPHandler {
           case 'clear_session': {
             const { sessionId } = args as { sessionId?: string };
             
-            // БЕЗОТКАЗНАЯ ОЧИСТКА: Сначала получаем список файлов из логов
-            const logs = await sharedStorage.getLogs();
-            const affectedFiles = new Set<string>();
-            
-            // Собираем уникальный список файлов из логов
-            logs.forEach(log => {
-              if (log.context && log.context.includes(':')) {
-                const filePath = log.context.split(':')[0];
-                if (filePath && filePath.trim()) {
-                  affectedFiles.add(filePath);
+            try {
+              // БЕЗОТКАЗНАЯ ОЧИСТКА: Собираем список файлов из всех источников
+              const affectedFiles = new Set<string>();
+              
+              // 1. Получаем файлы из реестра проб (самый надежный источник)
+              const allProbes = getAllProbes();
+              for (const probe of allProbes) {
+                if (probe.filePath && fs.existsSync(probe.filePath)) {
+                  affectedFiles.add(probe.filePath);
                 }
               }
-            });
-            
-            // Также получаем файлы из реестра проб
-            const allProbes = getAllProbes();
-            for (const probe of allProbes) {
-              affectedFiles.add(probe.filePath);
-            }
-            
-            // Удаляем все пробы из каждого файла
-            const removalResults: Array<{ file: string; success: boolean; message: string }> = [];
-            for (const filePath of affectedFiles) {
-              try {
-                const removalResult = await removeAllProbesFromFile(filePath);
-                removalResults.push({
-                  file: filePath,
-                  success: removalResult.success,
-                  message: removalResult.message
-                });
-              } catch (error) {
-                removalResults.push({
-                  file: filePath,
-                  success: false,
-                  message: `Error removing probes from ${filePath}: ${error instanceof Error ? error.message : String(error)}`
-                });
+              
+              // 2. Получаем файлы из логов (может содержать пути)
+              const logs = await sharedStorage.getLogs();
+              logs.forEach(log => {
+                if (log.context) {
+                  // Пытаемся извлечь путь из context (формат может быть "file:line" или просто путь)
+                  const contextStr = String(log.context);
+                  if (contextStr.includes(':')) {
+                    const filePath = contextStr.split(':')[0].trim();
+                    if (filePath && fs.existsSync(filePath)) {
+                      affectedFiles.add(filePath);
+                    }
+                  } else if (fs.existsSync(contextStr)) {
+                    // Может быть просто путь
+                    affectedFiles.add(contextStr);
+                  }
+                }
+                // Также проверяем data на наличие filePath
+                if (log.data && typeof log.data === 'object' && 'filePath' in log.data) {
+                  const filePath = String(log.data.filePath);
+                  if (filePath && fs.existsSync(filePath)) {
+                    affectedFiles.add(filePath);
+                  }
+                }
+              });
+              
+              // 3. Сканируем workspace на наличие файлов с маркерами RooTrace (если доступен)
+              // Это опционально и может быть медленным, поэтому делаем только если нет других источников
+              if (affectedFiles.size === 0) {
+                // Пытаемся найти файлы с маркерами через рекурсивный поиск
+                // Но только если у нас есть доступ к workspace
+                try {
+                  const workspaceRoot = process.cwd();
+                  if (workspaceRoot && fs.existsSync(workspaceRoot)) {
+                    const filesWithProbes = await this.findFilesWithProbes(workspaceRoot);
+                    for (const file of filesWithProbes) {
+                      affectedFiles.add(file);
+                    }
+                  }
+                } catch (scanError) {
+                  // Игнорируем ошибки сканирования - это опциональная функция
+                  logDebug(`Workspace scan failed: ${scanError}`, 'RooTraceMCPHandler.clear_session');
+                }
               }
+              
+              // Удаляем все пробы из каждого файла
+              const removalResults: Array<{ file: string; success: boolean; message: string }> = [];
+              for (const filePath of affectedFiles) {
+                try {
+                  // Проверяем, что файл существует и содержит маркеры перед попыткой удаления
+                  if (!fs.existsSync(filePath)) {
+                    removalResults.push({
+                      file: filePath,
+                      success: false,
+                      message: `File not found: ${filePath}`
+                    });
+                    continue;
+                  }
+                  
+                  // Быстрая проверка на наличие маркеров
+                  const content = await fs.promises.readFile(filePath, 'utf8');
+                  if (!content.includes('RooTrace [id:') && !content.includes('RooTrace[id:')) {
+                    // Файл не содержит проб - пропускаем
+                    continue;
+                  }
+                  
+                  const removalResult = await removeAllProbesFromFile(filePath);
+                  removalResults.push({
+                    file: filePath,
+                    success: removalResult.success,
+                    message: removalResult.message
+                  });
+                } catch (error) {
+                  removalResults.push({
+                    file: filePath,
+                    success: false,
+                    message: `Error removing probes from ${filePath}: ${error instanceof Error ? error.message : String(error)}`
+                  });
+                }
+              }
+              
+              // ОЧИСТКА ДАННЫХ: Обнуляем JSON-файл логов через блокировку
+              await sharedStorage.clear();
+              
+              const successCount = removalResults.filter(r => r.success).length;
+              const totalCount = removalResults.length;
+              const filesWithProbes = removalResults.filter(r => r.success || r.message.includes('probe')).length;
+              
+              result = {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    success: true,
+                    message: totalCount > 0 
+                      ? `Проект очищен. Обработано ${totalCount} файлов, удалены пробы из ${successCount} файлов. Логи сброшены.`
+                      : `Сессия очищена. Логи сброшены. Файлы с пробами не найдены (возможно, пробы уже удалены или были вставлены через apply_diff без регистрации).`,
+                    sessionId: sessionId || 'current',
+                    clearedAt: new Date().toISOString(),
+                    probesRemoved: allProbes.length,
+                    filesProcessed: totalCount,
+                    filesWithProbesRemoved: successCount,
+                    removalResults: removalResults
+                  })
+                }]
+              };
+            } catch (error) {
+              // Если что-то пошло не так, все равно очищаем логи
+              try {
+                await sharedStorage.clear();
+              } catch (clearError) {
+                // Игнорируем ошибки очистки логов
+              }
+              
+              result = {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    success: false,
+                    error: `Error during clear_session: ${error instanceof Error ? error.message : String(error)}`,
+                    errorCode: 'CLEAR_SESSION_FAILED',
+                    sessionId: sessionId || 'current',
+                    note: 'Logs were cleared, but probe removal may have failed. Check removalResults for details.'
+                  })
+                }],
+                isError: true
+              };
             }
-            
-            // ОЧИСТКА ДАННЫХ: Обнуляем JSON-файл логов через блокировку
-            await sharedStorage.clear();
-            
-            const successCount = removalResults.filter(r => r.success).length;
-            const totalCount = removalResults.length;
-            
-            result = {
-              content: [{
-                type: 'text',
-                text: JSON.stringify({
-                  success: true,
-                  message: `Проект полностью очищен. Удалены пробы из ${successCount} из ${totalCount} файлов. Логи сброшены.`,
-                  sessionId: sessionId || 'current',
-                  clearedAt: new Date().toISOString(),
-                  probesRemoved: allProbes.length,
-                  filesProcessed: totalCount,
-                  removalResults: removalResults
-                })
-              }]
-            };
             break;
           }
 
@@ -444,6 +665,44 @@ export class RooTraceMCPHandler {
               break;
             }
 
+            // 🚫 КРИТИЧЕСКАЯ ПРОВЕРКА: ЗАПРЕТ inject_probes для Python файлов
+            if (this.isPythonFile(filePath)) {
+              result = {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    success: false,
+                    error: `FORBIDDEN: inject_probes is STRICTLY PROHIBITED for Python files (${filePath}). According to protocol, you MUST use Block Rewrite method (apply_diff) to replace entire function/block instead of point injection. This prevents IndentationError and maintains code structure.\n\n🛡️ CRITICAL: Before using apply_diff, you MUST create a backup: (1) If git repository: git add . && git commit -m "AI Debugger: Pre-instrumentation backup", OR (2) If no git: cp "${filePath}" "${filePath}.bak". This is a safety requirement to ensure rollback capability.`,
+                    errorCode: 'FORBIDDEN_FOR_PYTHON',
+                    filePath,
+                    requiredMethod: 'apply_diff (Block Rewrite)',
+                    requiredAction: 'git add . && git commit -m "AI Debugger: Pre-instrumentation backup" OR cp "${filePath}" "${filePath}.bak"'
+                  })
+                }],
+                isError: true
+              };
+              break;
+            }
+
+            // 🛡️ SAFETY CHECK: Проверка коммита перед редактированием
+            const commitCheck = await this.checkGitCommitBeforeEdit(filePath);
+            if (!commitCheck.allowed) {
+              result = {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    success: false,
+                    error: commitCheck.error,
+                    errorCode: 'SAFETY_CHECK_FAILED',
+                    filePath,
+                    requiredAction: 'git add . && git commit -m "AI Debugger: Pre-instrumentation backup" OR cp "${filePath}" "${filePath}.bak"'
+                  })
+                }],
+                isError: true
+              };
+              break;
+            }
+
             // Вызываем реальную функцию инъекции пробы с обработкой ошибок и retry механизмом
             try {
               // Нормализуем probeCode: если передан, но пустой, считаем как не переданный
@@ -551,6 +810,26 @@ export class RooTraceMCPHandler {
                 break;
               }
               
+              // 🚫 КРИТИЧЕСКАЯ ПРОВЕРКА: ЗАПРЕТ inject_multiple_probes для Python файлов
+              if (this.isPythonFile(probe.filePath)) {
+                validationError = {
+                  content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                      success: false,
+                      error: `FORBIDDEN: inject_multiple_probes is STRICTLY PROHIBITED for Python files. Probe ${i + 1} targets Python file (${probe.filePath}). According to protocol, you MUST use Block Rewrite method (apply_diff) to replace entire function/block instead of multiple injections. This prevents IndentationError and maintains code structure.\n\n🛡️ CRITICAL: Before using apply_diff, you MUST create a backup: (1) If git repository: git add . && git commit -m "AI Debugger: Pre-instrumentation backup", OR (2) If no git: cp "${probe.filePath}" "${probe.filePath}.bak". This is a safety requirement to ensure rollback capability.`,
+                      errorCode: 'FORBIDDEN_FOR_PYTHON',
+                      probeIndex: i,
+                      filePath: probe.filePath,
+                      requiredMethod: 'apply_diff (Block Rewrite)',
+                      requiredAction: 'git add . && git commit -m "AI Debugger: Pre-instrumentation backup" OR cp "${probe.filePath}" "${probe.filePath}.bak"'
+                    })
+                  }],
+                  isError: true
+                };
+                break;
+              }
+              
               if (probe.lineNumber === undefined || probe.lineNumber === null || typeof probe.lineNumber !== 'number' || isNaN(probe.lineNumber) || probe.lineNumber < 1) {
                 validationError = {
                   content: [{
@@ -587,6 +866,35 @@ export class RooTraceMCPHandler {
             // Если была ошибка валидации, возвращаем её
             if (validationError) {
               result = validationError;
+              break;
+            }
+
+            // 🛡️ SAFETY CHECK: Проверка коммита перед редактированием для всех уникальных файлов
+            const uniqueFiles = [...new Set(probes.map(p => p.filePath))];
+            let commitCheckError: CallToolResult | null = null;
+            for (const filePath of uniqueFiles) {
+              const commitCheck = await this.checkGitCommitBeforeEdit(filePath);
+              if (!commitCheck.allowed) {
+                commitCheckError = {
+                  content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                      success: false,
+                      error: commitCheck.error,
+                      errorCode: 'SAFETY_CHECK_FAILED',
+                      filePath,
+                      requiredAction: 'git add . && git commit -m "AI Debugger: Pre-instrumentation backup" OR cp "${filePath}" "${filePath}.bak"'
+                    })
+                  }],
+                  isError: true
+                };
+                break;
+              }
+            }
+            
+            // Если была ошибка проверки коммита, возвращаем её
+            if (commitCheckError) {
+              result = commitCheckError;
               break;
             }
 
@@ -676,8 +984,9 @@ export class RooTraceMCPHandler {
               break;
             }
 
-            // Возвращаем структурированное сообщение для бота
-            // Бот должен показать это пользователю в чате и вызвать команду VS Code для показа кнопок
+            // ⚠️ КРИТИЧЕСКИ ВАЖНО: НЕ используем showInformationMessage с кнопками, так как это вызывает таймеры
+            // Вместо этого просто возвращаем инструкции для бота, который покажет их в чате
+            // Пользователь должен сам сказать "Logs ready" когда будет готов, без автоматических таймеров
             const stepNum = stepNumber || 1;
             const userMessage = `## 📋 Шаг ${stepNum}: Инструкции по отладке
 
@@ -686,21 +995,16 @@ ${instructions}
 **Следующие шаги:**
 1. Запустите код и воспроизведите ошибку
 2. Выполните действия, которые вызывают проблему  
-3. После завершения работы кода нажмите одну из кнопок ниже:
-   - **"Продолжить"** - для анализа собранных логов
-   - **"Проблема устранена"** - если проблема решена и нужно очистить сессию
+3. После завершения работы кода **напишите в чат "Logs ready"** для анализа собранных логов
+4. Если проблема решена, напишите "Проблема устранена" для очистки сессии
 
-**Ожидаю вашего подтверждения перед продолжением анализа.**`;
+**⚠️ ВАЖНО:** Нет таймеров и автоматических действий. Вы контролируете процесс. Напишите "Logs ready" когда будете готовы.`;
             
-            // Пытаемся вызвать команду VS Code для показа всплывающего сообщения с кнопками
-            // Но так как мы в MCP сервере, мы не можем напрямую вызвать VS Code API
-            // Поэтому возвращаем инструкции для бота, который должен показать сообщение и вызвать команду
+            // Возвращаем инструкции для бота - он покажет их в чате БЕЗ кнопок и таймеров
             result = {
               content: [{
                 type: 'text',
-                // Возвращаем как markdown с инструкциями для бота показать пользователю
-                // Бот должен показать это сообщение в чате и объяснить пользователю что делать
-                text: userMessage + '\n\n**Примечание для бота:** После показа этого сообщения пользователю, объясните что нужно запустить код и воспроизвести ошибку. После завершения работы кода пользователь должен сообщить вам "Продолжить" для анализа логов или "Проблема устранена" если проблема решена.'
+                text: userMessage
               }]
             };
             break;
@@ -757,8 +1061,126 @@ ${instructions}
   }
 
   /**
-   * Останавливает MCP-сервер RooTrace
+   * Тестирует работоспособность сервера через запись/чтение
+   * Отправляет тестовый POST запрос, затем читает логи и сверяет результат
    */
+  private async testServerWriteRead(serverUrl: string): Promise<{ success: boolean; error?: string }> {
+    const testId = `test_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    const testMessage = `Server test: ${testId}`;
+    const testData = {
+      hypothesisId: 'H1',
+      message: testMessage,
+      state: { testId, timestamp: new Date().toISOString() }
+    };
+
+    return new Promise((resolve) => {
+      try {
+        // Шаг 1: Отправляем тестовый POST запрос
+        const url = new URL(serverUrl);
+        const postData = JSON.stringify(testData);
+        
+        const options: http.RequestOptions = {
+          hostname: url.hostname,
+          port: url.port || 51234,
+          path: url.pathname || '/',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(postData)
+          },
+          timeout: 5000
+        };
+
+        const req = http.request(options, async (res) => {
+          let responseData = '';
+          
+          res.on('data', (chunk) => {
+            responseData += chunk.toString();
+          });
+          
+          res.on('end', async () => {
+            try {
+              // Проверяем ответ сервера
+              if (res.statusCode !== 200) {
+                resolve({ success: false, error: `Server returned status ${res.statusCode}: ${responseData}` });
+                return;
+              }
+
+              // Шаг 2: Ждем немного, чтобы запись завершилась
+              await new Promise(resolve => setTimeout(resolve, 200));
+
+              // Шаг 3: Читаем логи из storage
+              const logs = await sharedStorage.getLogs();
+              
+              // Шаг 4: Ищем наш тестовый лог
+              const testLog = logs.find(log => 
+                log.hypothesisId === 'H1' && 
+                log.context === testMessage
+              );
+
+              if (!testLog) {
+                resolve({ 
+                  success: false, 
+                  error: `Test log not found in storage. Total logs: ${logs.length}` 
+                });
+                return;
+              }
+
+              // Шаг 5: Проверяем, что данные совпадают
+              if (testLog.data && typeof testLog.data === 'object' && 'testId' in testLog.data) {
+                const logTestId = (testLog.data as any).testId;
+                if (logTestId === testId) {
+                  // Тестовый лог оставляем в storage - он не помешает и может быть полезен для диагностики
+                  logDebug(`Server test passed: write/read verified, testId=${testId}`, 'MCPHandler.testServerWriteRead');
+                  resolve({ success: true });
+                } else {
+                  resolve({ 
+                    success: false, 
+                    error: `Test ID mismatch: expected ${testId}, got ${logTestId}` 
+                  });
+                }
+              } else {
+                resolve({ 
+                  success: false, 
+                  error: `Test log data format incorrect: ${JSON.stringify(testLog.data)}` 
+                });
+              }
+            } catch (error) {
+              resolve({ 
+                success: false, 
+                error: `Error reading logs: ${error instanceof Error ? error.message : String(error)}` 
+              });
+            }
+          });
+        });
+
+        req.on('error', (error) => {
+          resolve({ 
+            success: false, 
+            error: `HTTP request error: ${error.message}` 
+          });
+        });
+
+        req.on('timeout', () => {
+          req.destroy();
+          resolve({ 
+            success: false, 
+            error: 'HTTP request timeout' 
+          });
+        });
+
+        req.write(postData);
+        req.end();
+
+      } catch (error) {
+        resolve({ 
+          success: false, 
+          error: `Test setup error: ${error instanceof Error ? error.message : String(error)}` 
+        });
+      }
+    });
+  }
+
   async stop(): Promise<void> {
     try {
       if (this.server) {
@@ -871,6 +1293,64 @@ ${instructions}
     ];
 
     return temporaryErrorPatterns.some(pattern => pattern.test(error.message));
+  }
+
+  /**
+   * Рекурсивно находит все файлы с маркерами RooTrace в директории
+   * Используется как fallback, если реестр проб и логи не содержат информации о файлах
+   */
+  private async findFilesWithProbes(rootDir: string, maxDepth: number = 5, currentDepth: number = 0): Promise<string[]> {
+    const filesWithProbes: string[] = [];
+    
+    if (currentDepth >= maxDepth) {
+      return filesWithProbes;
+    }
+    
+    try {
+      const entries = await fs.promises.readdir(rootDir, { withFileTypes: true });
+      
+      for (const entry of entries) {
+        // Пропускаем скрытые директории и node_modules
+        if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'venv' || entry.name === '__pycache__') {
+          continue;
+        }
+        
+        const fullPath = path.join(rootDir, entry.name);
+        
+        try {
+          if (entry.isDirectory()) {
+            // Рекурсивно сканируем поддиректории
+            const subFiles = await this.findFilesWithProbes(fullPath, maxDepth, currentDepth + 1);
+            filesWithProbes.push(...subFiles);
+          } else if (entry.isFile()) {
+            // Проверяем только текстовые файлы с кодом
+            const ext = path.extname(entry.name).toLowerCase();
+            const codeExtensions = ['.js', '.ts', '.py', '.java', '.go', '.rs', '.cpp', '.c', '.cs', '.php', '.rb', '.swift', '.kt'];
+            
+            if (codeExtensions.includes(ext)) {
+              try {
+                const content = await fs.promises.readFile(fullPath, 'utf8');
+                // Быстрая проверка на наличие маркеров
+                if (content.includes('RooTrace [id:') || content.includes('RooTrace[id:')) {
+                  filesWithProbes.push(fullPath);
+                }
+              } catch (readError) {
+                // Игнорируем ошибки чтения (бинарные файлы, права доступа и т.д.)
+                continue;
+              }
+            }
+          }
+        } catch (entryError) {
+          // Игнорируем ошибки доступа к отдельным файлам/директориям
+          continue;
+        }
+      }
+    } catch (dirError) {
+      // Игнорируем ошибки доступа к директории
+      logDebug(`Error scanning directory ${rootDir}: ${dirError}`, 'RooTraceMCPHandler.findFilesWithProbes');
+    }
+    
+    return filesWithProbes;
   }
 }
 

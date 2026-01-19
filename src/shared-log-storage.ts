@@ -148,13 +148,17 @@ export class SharedLogStorage extends EventEmitter {
     try {
       await withFileLock(logFilePath, async () => {
         if (!fs.existsSync(logFilePath)) {
+          logDebug(`File does not exist: ${logFilePath}, initializing empty logs`, 'SharedLogStorage.loadFromFile');
           this.logs = [];
           this.rebuildIndexes();
           return;
         }
         
         const fileContent = fs.readFileSync(logFilePath, 'utf8');
+        logDebug(`Loaded file content (${fileContent.length} chars): ${fileContent.substring(0, 100)}...`, 'SharedLogStorage.loadFromFile');
+        
         if (!fileContent.trim()) {
+          logDebug('File is empty or whitespace only, initializing empty logs', 'SharedLogStorage.loadFromFile');
           this.logs = [];
           this.rebuildIndexes();
           return;
@@ -166,12 +170,15 @@ export class SharedLogStorage extends EventEmitter {
         try {
           const parsed = JSON.parse(fileContent);
           logs = Array.isArray(parsed) ? parsed : [];
+          logDebug(`Parsed ${logs.length} logs from JSON file`, 'SharedLogStorage.loadFromFile');
         } catch (parseError) {
           // Если JSON парсинг не удался, пытаемся расшифровать
+          logDebug(`JSON parse failed, trying to decrypt: ${parseError}`, 'SharedLogStorage.loadFromFile');
           try {
             const encryptionKey = getEncryptionKey();
             const decrypted = decryptObject(fileContent, encryptionKey);
             logs = Array.isArray(decrypted) ? decrypted : [];
+            logDebug(`Decrypted ${logs.length} logs from encrypted file`, 'SharedLogStorage.loadFromFile');
           } catch (decryptError) {
             // Если расшифровка не удалась, обнуляем логи
             handleError(decryptError, 'SharedLogStorage.loadFromFile', { 
@@ -218,6 +225,7 @@ export class SharedLogStorage extends EventEmitter {
         
         // Пересоздаем индексы
         this.rebuildIndexes();
+        logDebug(`Successfully loaded ${this.logs.length} logs from file`, 'SharedLogStorage.loadFromFile');
       });
     } catch (error) {
       handleError(error, 'SharedLogStorage.loadFromFile', { filePath: logFilePath });
@@ -231,15 +239,28 @@ export class SharedLogStorage extends EventEmitter {
    */
   private async saveToFile(logs: RuntimeLog[]): Promise<void> {
     const logFilePath = this.getLogFilePath();
+    logDebug(`saveToFile called: saving ${logs.length} logs to ${logFilePath}`, 'SharedLogStorage.saveToFile');
     
-    await withFileLock(logFilePath, async () => {
-      // Создаем директорию если её нет
-      const dir = path.dirname(logFilePath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(logFilePath, JSON.stringify(logs, null, 2), 'utf8');
-    });
+    try {
+      await withFileLock(logFilePath, async () => {
+        // Создаем директорию если её нет
+        const dir = path.dirname(logFilePath);
+        if (!fs.existsSync(dir)) {
+          logDebug(`Creating directory: ${dir}`, 'SharedLogStorage.saveToFile');
+          fs.mkdirSync(dir, { recursive: true });
+        }
+        const jsonContent = JSON.stringify(logs, null, 2);
+        logDebug(`Writing ${jsonContent.length} bytes to file`, 'SharedLogStorage.saveToFile');
+        fs.writeFileSync(logFilePath, jsonContent, 'utf8');
+        logDebug(`Successfully saved ${logs.length} logs to ${logFilePath}`, 'SharedLogStorage.saveToFile');
+      });
+    } catch (error) {
+      handleError(error, 'SharedLogStorage.saveToFile', { 
+        filePath: logFilePath,
+        logsCount: logs.length 
+      });
+      throw error; // Пробрасываем ошибку дальше
+    }
   }
   
   /**
@@ -250,13 +271,18 @@ export class SharedLogStorage extends EventEmitter {
       try {
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (workspaceFolders && workspaceFolders.length > 0) {
-          return path.join(workspaceFolders[0].uri.fsPath, '.ai_debug_logs.json');
+          const filePath = path.join(workspaceFolders[0].uri.fsPath, '.ai_debug_logs.json');
+          logDebug(`Using workspace log file path: ${filePath}`, 'SharedLogStorage.getLogFilePath');
+          return filePath;
         }
       } catch (e) {
         // Игнорируем ошибки при доступе к workspace в MCP контексте
+        logDebug(`Error accessing workspace folders: ${e}`, 'SharedLogStorage.getLogFilePath');
       }
     }
-    return path.join(process.cwd(), '.ai_debug_logs.json');
+    const fallbackPath = path.join(process.cwd(), '.ai_debug_logs.json');
+    logDebug(`Using fallback log file path: ${fallbackPath}`, 'SharedLogStorage.getLogFilePath');
+    return fallbackPath;
   }
   
   /**
@@ -301,39 +327,52 @@ export class SharedLogStorage extends EventEmitter {
    * ```
    */
   async addLog(log: RuntimeLog): Promise<void> {
-    // Синхронизируемся перед добавлением (на случай параллельных записей)
-    await this.loadFromFile();
-    
-    const index = this.logs.length;
-    this.logs.push(log);
-    
-    // Обновляем индексы
-    if (!this.hypothesisIndex.has(log.hypothesisId)) {
-      this.hypothesisIndex.set(log.hypothesisId, []);
+    logDebug(`addLog called: hypothesisId=${log.hypothesisId}, context=${log.context}`, 'SharedLogStorage.addLog');
+    try {
+      // Синхронизируемся перед добавлением (на случай параллельных записей)
+      await this.loadFromFile();
+      logDebug(`After loadFromFile: ${this.logs.length} logs in memory`, 'SharedLogStorage.addLog');
+      
+      const index = this.logs.length;
+      this.logs.push(log);
+      logDebug(`Added log at index ${index}, total logs: ${this.logs.length}`, 'SharedLogStorage.addLog');
+      
+      // Обновляем индексы
+      if (!this.hypothesisIndex.has(log.hypothesisId)) {
+        this.hypothesisIndex.set(log.hypothesisId, []);
+      }
+      this.hypothesisIndex.get(log.hypothesisId)!.push(index);
+      
+      const timestamp = new Date(log.timestamp).getTime();
+      const dayKey = Math.floor(timestamp / (24 * 60 * 60 * 1000));
+      if (!this.timestampIndex.has(dayKey)) {
+        this.timestampIndex.set(dayKey, []);
+      }
+      this.timestampIndex.get(dayKey)!.push(index);
+      
+      // Ограничиваем размер логов последними MAX_LOGS записями
+      const maxLogs = this.getMaxLogs();
+      if (this.logs.length > maxLogs) {
+        const removedCount = this.logs.length - maxLogs;
+        this.logs = this.logs.slice(-maxLogs);
+        // Пересоздаем индексы после обрезки
+        this.rebuildIndexes();
+      }
+      
+      // БЕЗОТКАЗНОСТЬ: Сразу сбрасываем на диск (режим Extension - Writer)
+      await this.saveToFile(this.logs);
+      
+      logDebug(`Added log: ${log.hypothesisId} - ${log.context}`, 'SharedLogStorage.addLog');
+      
+      // Эмитим событие для WebSocket клиентов
+      this.emit('logAdded', log);
+    } catch (error) {
+      handleError(error, 'SharedLogStorage.addLog', { 
+        hypothesisId: log.hypothesisId,
+        context: log.context 
+      });
+      throw error; // Пробрасываем ошибку дальше
     }
-    this.hypothesisIndex.get(log.hypothesisId)!.push(index);
-    
-    const timestamp = new Date(log.timestamp).getTime();
-    const dayKey = Math.floor(timestamp / (24 * 60 * 60 * 1000));
-    if (!this.timestampIndex.has(dayKey)) {
-      this.timestampIndex.set(dayKey, []);
-    }
-    this.timestampIndex.get(dayKey)!.push(index);
-    
-    // Ограничиваем размер логов последними MAX_LOGS записями
-    const maxLogs = this.getMaxLogs();
-    if (this.logs.length > maxLogs) {
-      const removedCount = this.logs.length - maxLogs;
-      this.logs = this.logs.slice(-maxLogs);
-      // Пересоздаем индексы после обрезки
-      this.rebuildIndexes();
-    }
-    
-    // БЕЗОТКАЗНОСТЬ: Сразу сбрасываем на диск (режим Extension - Writer)
-    await this.saveToFile(this.logs);
-    
-    // Эмитим событие для WebSocket клиентов
-    this.emit('logAdded', log);
   }
   
   /**

@@ -539,7 +539,7 @@ function findWorkspaceRoot(filePath: string): string | null {
  * @param filePath - путь к файлу, для которого нужен URL (используется для поиска рабочей области)
  * @returns URL сервера или null, если файл не найден
  */
-function getServerUrl(workspacePath?: string, filePath?: string): string | null {
+export function getServerUrl(workspacePath?: string, filePath?: string): string | null {
   try {
     // Определяем базовый путь для поиска конфига
     let basePath: string | null = null;
