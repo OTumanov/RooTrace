@@ -2,20 +2,18 @@ module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
   roots: ['<rootDir>/tests'],
-  testMatch: ['**/__tests__/**/*.ts', '**/?(*.)+(spec|test).ts'],
-  transform: {
-    '^.+\\.tsx?$': 'ts-jest',
-  },
+  testMatch: ['**/?(*.)+(spec|test).[tj]s?(x)'],
+  setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
   collectCoverageFrom: [
-    'src/**/*.ts',
+    'src/**/*.{ts,js}',
     '!src/**/*.d.ts',
-    '!src/types/**',
+    '!src/types/**/*',
   ],
   coverageDirectory: 'coverage',
   coverageReporters: ['text', 'lcov', 'html'],
-  moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json', 'node'],
-  testTimeout: 10000,
-  clearMocks: true,
-  resetMocks: true,
-  restoreMocks: true,
+  testTimeout: 30000,
+  verbose: true,
+  moduleNameMapper: {
+    '^vscode$': '<rootDir>/tests/vscode-mock.ts'
+  }
 };

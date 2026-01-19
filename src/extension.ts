@@ -1,26 +1,68 @@
- import * as vscode from 'vscode';
+import * as vscode from 'vscode';
 import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import { registerMcpServer, unregisterMcpServer } from './mcp-registration';
 import { RoleManager } from './role-manager';
+import { SharedLogStorage, RuntimeLog } from './shared-log-storage';
+import { SessionManager } from './session-manager';
+import { LogExporter, ExportFormat } from './log-exporter';
+import { encryptObject, decryptObject, getEncryptionKey } from './encryption-utils';
+import { initializeErrorHandler, handleError, logInfo, logDebug, handleWarning } from './error-handler';
+import { metricsCollector } from './metrics';
+import { SERVER_CONFIG, RATE_LIMIT_CONFIG } from './constants';
+import { LogData } from './types';
+
+// Интерфейсы для типизации
+interface WebSocketClient {
+  readyState: number;
+  send(data: string): void;
+  close(): void;
+}
+
+interface WebViewMessage {
+  command?: string;
+  type?: string;
+  logs?: unknown;
+  error?: string;
+  hypothesisId?: string;
+  context?: string;
+  data?: unknown;
+  timestamp?: string;
+}
+
+interface LogDataRequest {
+  hypothesisId?: string;
+  message?: string;
+  state?: LogData;
+}
 
 let server: http.Server | null = null;
 let port: number | null = null;
 let outputChannel: vscode.OutputChannel;
+let wsServer: WebSocketClient | null = null; // WebSocket server
+const wsClients: Set<WebSocketClient> = new Set(); // WebSocket clients
 
 // WebView Panel
 let panel: vscode.WebviewPanel | undefined;
 
-// In-memory log storage for quick access
-let inMemoryLogs: string[] = [];
+// Используем shared log storage вместо изолированного массива
+const sharedStorage = SharedLogStorage.getInstance();
 
-// Path to the persistent log file
-const logFilePath = path.join(vscode.workspace.rootPath || '.', '.ai_debug_logs.json');
+// Function to get log file path for current workspace
+function getLogFilePath(): string {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders && workspaceFolders.length > 0) {
+        return path.join(workspaceFolders[0].uri.fsPath, '.ai_debug_logs.json');
+    }
+    return path.join('.', '.ai_debug_logs.json');
+}
 
 // Function to append log entries to the persistent file
-async function appendLogToFile(hypothesisId: string, context: string, data: any) {
+async function appendLogToFile(hypothesisId: string, context: string, data: LogData) {
     try {
+        const logFilePath = getLogFilePath();
+        
         // Create log entry object
         const logEntry = {
             hypothesisId,
@@ -34,15 +76,29 @@ async function appendLogToFile(hypothesisId: string, context: string, data: any)
         if (fs.existsSync(logFilePath)) {
             const fileContent = fs.readFileSync(logFilePath, 'utf8');
             if (fileContent.trim()) {
-                existingLogs = JSON.parse(fileContent);
+                try {
+                    // Try to parse as JSON first (for backwards compatibility)
+                    existingLogs = JSON.parse(fileContent);
+                } catch (parseError) {
+                    // If JSON parsing fails, try to decrypt the content
+                    try {
+                        const encryptionKey = getEncryptionKey();
+                        existingLogs = decryptObject(fileContent, encryptionKey);
+                    } catch (decryptError) {
+                        outputChannel.appendLine(`[ERROR] Failed to decrypt log file: ${decryptError}`);
+                        existingLogs = [];
+                    }
+                }
             }
         }
 
         // Append new log entry
         existingLogs.push(logEntry);
 
-        // Write updated logs back to file
-        fs.writeFileSync(logFilePath, JSON.stringify(existingLogs, null, 2));
+        // Encrypt and write updated logs back to file
+        const encryptionKey = getEncryptionKey();
+        const encryptedLogs = encryptObject(existingLogs, encryptionKey);
+        fs.writeFileSync(logFilePath, encryptedLogs, 'utf8');
     } catch (error) {
         outputChannel.appendLine(`[ERROR] Failed to write log to file: ${error}`);
     }
@@ -56,7 +112,33 @@ interface AIDebugConfig {
 }
 
 export async function activate(context: vscode.ExtensionContext) {
-    outputChannel = vscode.window.createOutputChannel('AI Debugger');
+    // КРИТИЧНО: Логируем в консоль ПЕРВЫМ делом, до создания output channel
+    // Это поможет увидеть проблему даже если output channel не создастся
+    console.error('='.repeat(60));
+    console.error('[RooTrace] ===== EXTENSION ACTIVATING =====');
+    console.error(`[RooTrace] Extension path: ${context.extensionPath}`);
+    console.error(`[RooTrace] Extension ID: ${context.extension.id}`);
+    console.error(`[RooTrace] Extension version: ${context.extension.packageJSON.version}`);
+    console.error(`[RooTrace] Node version: ${process.version}`);
+    console.error(`[RooTrace] Platform: ${process.platform}`);
+    
+    // Создаем Output Channel
+    try {
+        outputChannel = vscode.window.createOutputChannel('AI Debugger');
+        // Инициализируем ErrorHandler с output channel
+        initializeErrorHandler(outputChannel);
+        
+        outputChannel.appendLine('='.repeat(50));
+        outputChannel.appendLine('[RooTrace] Extension ACTIVATING...');
+        outputChannel.appendLine(`[RooTrace] Extension path: ${context.extensionPath}`);
+        outputChannel.appendLine(`[RooTrace] Extension ID: ${context.extension.id}`);
+        outputChannel.appendLine(`[RooTrace] Extension version: ${context.extension.packageJSON.version}`);
+        outputChannel.show(true); // Показываем канал сразу
+        
+        logInfo('Output channel created successfully', 'Extension.activate');
+    } catch (error) {
+        handleError(error, 'Extension.activate', { action: 'createOutputChannel' });
+    }
     
     const startCommand = vscode.commands.registerCommand('rooTrace.startServer', async () => {
         await startServer();
@@ -74,23 +156,173 @@ export async function activate(context: vscode.ExtensionContext) {
     const openDashboardCommand = vscode.commands.registerCommand('ai-debugger.openDashboard', async () => {
         await openDashboard();
     });
+    
+    // MCP Commands for dashboard buttons
+    const readRuntimeLogsCommand = vscode.commands.registerCommand('rooTrace.readRuntimeLogs', async () => {
+        try {
+            // Call the MCP tool directly
+            const result = await vscode.commands.executeCommand('mcp-roo-trace-read_runtime_logs');
+            return result;
+        } catch (error) {
+            handleError(error, 'Extension.readRuntimeLogs', { action: 'readRuntimeLogs' });
+            throw error;
+        }
+    });
+    
+    const clearSessionCommand = vscode.commands.registerCommand('rooTrace.clearSession', async () => {
+        try {
+            // Call the MCP tool directly
+            const result = await vscode.commands.executeCommand('mcp-roo-trace-clear_session');
+            return result;
+        } catch (error) {
+            handleError(error, 'Extension.clearSession', { action: 'clearSession' });
+            throw error;
+        }
+    });
+    
+    // Command to show user instructions with buttons
+    const showUserInstructionsCommand = vscode.commands.registerCommand('rooTrace.showUserInstructions', async (instructions: string, stepNumber?: number) => {
+        const stepNum = stepNumber || 1;
+        const message = `📋 Шаг ${stepNum}: Инструментация готова!\n\n${instructions}\n\n**Что делать дальше:**\n1. Запустите код и воспроизведите ошибку\n2. Выполните действия, которые вызывают проблему\n3. После завершения работы кода нажмите одну из кнопок ниже`;
+        
+        const action = await vscode.window.showInformationMessage(
+            message,
+            'Продолжить (анализ логов)',
+            'Проблема устранена'
+        );
+        
+        if (action === 'Продолжить (анализ логов)') {
+            // Открываем дашборд и показываем логи
+            await openDashboard();
+            outputChannel.appendLine('[USER ACTION] Пользователь готов к анализу логов');
+            // Возвращаем сигнал для бота, что пользователь готов продолжить
+            return { action: 'continue', message: 'Пользователь готов к анализу логов' };
+        } else if (action === 'Проблема устранена') {
+            try {
+                await vscode.commands.executeCommand('rooTrace.clearSession');
+                vscode.window.showInformationMessage('Сессия отладки очищена. Проблема решена!');
+                outputChannel.appendLine('[USER ACTION] Пользователь сообщил, что проблема решена');
+                return { action: 'resolved', message: 'Проблема решена, сессия очищена' };
+            } catch (error) {
+                vscode.window.showErrorMessage(`Ошибка при очистке сессии: ${error}`);
+                return { action: 'error', message: `Ошибка: ${error}` };
+            }
+        }
+        
+        return { action: 'cancelled', message: 'Действие отменено' };
+    });
+    
+    // Commands for user instructions buttons (legacy, для обратной совместимости)
+    const continueDebuggingCommand = vscode.commands.registerCommand('rooTrace.continueDebugging', async () => {
+        // Показываем сообщение, что пользователь готов продолжить
+        const action = await vscode.window.showInformationMessage(
+            'Готовы продолжить анализ логов?',
+            'Да, проанализировать логи',
+            'Отмена'
+        );
+        
+        if (action === 'Да, проанализировать логи') {
+            // Открываем дашборд и показываем логи
+            await openDashboard();
+            outputChannel.appendLine('[USER ACTION] Пользователь готов к анализу логов');
+        }
+    });
+    
+    const markResolvedCommand = vscode.commands.registerCommand('rooTrace.markResolved', async () => {
+        const action = await vscode.window.showInformationMessage(
+            'Проблема устранена? Очистить сессию отладки?',
+            'Да, очистить сессию',
+            'Отмена'
+        );
+        
+        if (action === 'Да, очистить сессию') {
+            try {
+                await vscode.commands.executeCommand('rooTrace.clearSession');
+                vscode.window.showInformationMessage('Сессия отладки очищена. Проблема решена!');
+            } catch (error) {
+                vscode.window.showErrorMessage(`Ошибка при очистке сессии: ${error}`);
+            }
+        }
+    });
 
     // Cleanup command
     const cleanupCommand = vscode.commands.registerCommand('ai-debugger.cleanup', async () => {
         await cleanupDebugCode();
     });
+
+    // Export commands
+    const exportJSONCommand = vscode.commands.registerCommand('rooTrace.exportJSON', async () => {
+        await exportLogs('json');
+    });
+
+    const exportCSVCommand = vscode.commands.registerCommand('rooTrace.exportCSV', async () => {
+        await exportLogs('csv');
+    });
+
+    const exportMarkdownCommand = vscode.commands.registerCommand('rooTrace.exportMarkdown', async () => {
+        await exportLogs('markdown');
+    });
+
+    const exportHTMLCommand = vscode.commands.registerCommand('rooTrace.exportHTML', async () => {
+        await exportLogs('html');
+    });
     
-    // Start server automatically on activation and create config file
-    await startServer();
-    await createAIDebugConfig();
+    // Логируем активацию
+    outputChannel.appendLine('[RooTrace] Extension activating...');
+    outputChannel.show(true);
+    
+    // Проверяем наличие воркспейса
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+        outputChannel.appendLine('[RooTrace] WARNING: No workspace opened. MCP server and role registration will be skipped.');
+        outputChannel.appendLine('[RooTrace] Please open a workspace folder and reload the window.');
+        vscode.window.showWarningMessage('RooTrace: Please open a workspace folder for full functionality.');
+        return;
+    }
+    
+    outputChannel.appendLine(`[RooTrace] Workspace detected: ${workspaceFolders.map(f => f.name).join(', ')}`);
+    
+    // Start server automatically on activation
+    // Config file will be created after server assigns port (in startServer callback)
+    try {
+        outputChannel.appendLine('[RooTrace] Starting HTTP server...');
+        await startServer();
+        outputChannel.appendLine('[RooTrace] HTTP server started successfully');
+    } catch (error) {
+        outputChannel.appendLine(`[RooTrace] ERROR: Failed to start HTTP server: ${error}`);
+        vscode.window.showErrorMessage(`RooTrace: Failed to start HTTP server: ${error}`);
+    }
+    
     // Register MCP server
-    await registerMcpServer(context);
+    try {
+        outputChannel.appendLine('[RooTrace] Registering MCP server...');
+        await registerMcpServer(context);
+        outputChannel.appendLine('[RooTrace] MCP server registration completed');
+    } catch (error) {
+        outputChannel.appendLine(`[RooTrace] ERROR: Failed to register MCP server: ${error}`);
+        vscode.window.showErrorMessage(`RooTrace: Failed to register MCP server: ${error}`);
+    }
     
-    // Start MCP server configuration through registerMcpServer only
-    // Roo Cline и Roo Code будут использовать конфигурацию из .roo/mcp.json
+    // Initialize session manager and create first session
+    try {
+        const sessionManager = SessionManager.getInstance();
+        const sessionId = sessionManager.createSession('Initial session');
+        outputChannel.appendLine(`[RooTrace] Session created: ${sessionId}`);
+    } catch (error) {
+        outputChannel.appendLine(`[RooTrace] ERROR: Failed to create session: ${error}`);
+    }
     
     // Синхронизируем роль с Roo Code
-    await RoleManager.syncRoleWithRoo(context);
+    try {
+        outputChannel.appendLine('[RooTrace] Syncing role with Roo Code...');
+        await RoleManager.syncRoleWithRoo(context);
+        outputChannel.appendLine('[RooTrace] Role sync completed');
+    } catch (error) {
+        outputChannel.appendLine(`[RooTrace] ERROR: Failed to sync role: ${error}`);
+        vscode.window.showErrorMessage(`RooTrace: Failed to sync role: ${error}`);
+    }
+    
+    outputChannel.appendLine('[RooTrace] Extension activation completed');
 
     // Опционально: следим за открытием новых папок (для Multi-root воркспейсов)
     context.subscriptions.push(
@@ -104,41 +336,72 @@ export async function activate(context: vscode.ExtensionContext) {
         stopCommand,
         clearLogsCommand,
         openDashboardCommand,
-        cleanupCommand
+        cleanupCommand,
+        exportJSONCommand,
+        exportCSVCommand,
+        exportMarkdownCommand,
+        exportHTMLCommand,
+        readRuntimeLogsCommand,
+        clearSessionCommand,
+        showUserInstructionsCommand,
+        continueDebuggingCommand,
+        markResolvedCommand
     );
+    
+    // Setup WebSocket listeners for real-time updates
+    setupWebSocketListeners();
 }
 
 
 async function createAIDebugConfig() {
-    if (!vscode.workspace.rootPath || !port) {
+    if (!port) {
+        outputChannel.appendLine('[SYSTEM] Port not assigned yet, skipping .ai_debug_config creation');
         return;
     }
     
-    const configPath = path.join(vscode.workspace.rootPath, '.ai_debug_config');
-    const config: AIDebugConfig = {
-        url: `http://localhost:${port}/`,
-        status: "active",
-        timestamp: Date.now()
-    };
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+        outputChannel.appendLine('[SYSTEM] No workspace folders, skipping .ai_debug_config creation');
+        return;
+    }
     
-    try {
-        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-        outputChannel.appendLine(`[SYSTEM] Created .ai_debug_config: ${JSON.stringify(config)}`);
-    } catch (error) {
-        outputChannel.appendLine(`[SYSTEM] Error creating .ai_debug_config: ${error}`);
+    // Create config for each workspace folder
+    for (const folder of workspaceFolders) {
+        const configPath = path.join(folder.uri.fsPath, '.ai_debug_config');
+        const config: AIDebugConfig = {
+            url: `http://localhost:${port}/`,
+            status: "active",
+            timestamp: Date.now()
+        };
+        
+        try {
+            // Encrypt the config before writing to file
+            const encryptionKey = getEncryptionKey();
+            const encryptedConfig = encryptObject(config, encryptionKey);
+            fs.writeFileSync(configPath, encryptedConfig, 'utf8');
+            outputChannel.appendLine(`[SYSTEM] Created encrypted .ai_debug_config in ${folder.name}`);
+        } catch (error) {
+            outputChannel.appendLine(`[SYSTEM] Error creating .ai_debug_config in ${folder.name}: ${error}`);
+        }
     }
 }
 
 async function clearLogs() {
-    inMemoryLogs = [];
+    // Очищаем shared storage
+    sharedStorage.clear();
+    
     outputChannel.clear();
     outputChannel.appendLine('[SYSTEM] Logs cleared.');
     outputChannel.show(true);
     
     // Clear the persistent log file
     try {
+        const logFilePath = getLogFilePath();
         if (fs.existsSync(logFilePath)) {
-            fs.writeFileSync(logFilePath, '[]', 'utf8');
+            // Encrypt empty array and write to file
+            const encryptionKey = getEncryptionKey();
+            const encryptedEmptyArray = encryptObject([], encryptionKey);
+            fs.writeFileSync(logFilePath, encryptedEmptyArray, 'utf8');
         }
     } catch (error) {
         outputChannel.appendLine(`[SYSTEM] Error clearing persistent log file: ${error}`);
@@ -146,12 +409,14 @@ async function clearLogs() {
 }
 
 function loadAIDebugConfig(): AIDebugConfig | null {
-    if (!vscode.workspace.rootPath) {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
         outputChannel.appendLine('[SYSTEM] No workspace opened. Cannot load .ai_debug_config.');
         return null;
     }
     
-    const configPath = path.join(vscode.workspace.rootPath, '.ai_debug_config');
+    // Try to load from first workspace folder
+    const configPath = path.join(workspaceFolders[0].uri.fsPath, '.ai_debug_config');
     
     if (!fs.existsSync(configPath)) {
         outputChannel.appendLine('[SYSTEM] .ai_debug_config not found in workspace root.');
@@ -160,7 +425,22 @@ function loadAIDebugConfig(): AIDebugConfig | null {
     
     try {
         const configContent = fs.readFileSync(configPath, 'utf8');
-        const config: AIDebugConfig = JSON.parse(configContent);
+        
+        // Try to parse as JSON first (for backwards compatibility with unencrypted configs)
+        let config: AIDebugConfig;
+        try {
+            config = JSON.parse(configContent);
+        } catch (parseError) {
+            // If JSON parsing fails, try to decrypt the content
+            try {
+                const encryptionKey = getEncryptionKey();
+                config = decryptObject(configContent, encryptionKey);
+            } catch (decryptError) {
+                outputChannel.appendLine(`[SYSTEM] Error decrypting .ai_debug_config: ${decryptError}`);
+                return null;
+            }
+        }
+        
         return config;
     } catch (error) {
         outputChannel.appendLine(`[SYSTEM] Error reading .ai_debug_config: ${error}`);
@@ -168,7 +448,7 @@ function loadAIDebugConfig(): AIDebugConfig | null {
     }
 }
 
-function formatLogEntry(hypothesisId: string, context: string, data: any): string {
+function formatLogEntry(hypothesisId: string, context: string, data: LogData): string {
     const now = new Date();
     const time = now.toTimeString().split(' ')[0]; // HH:MM:SS format
     
@@ -181,33 +461,133 @@ function formatLogEntry(hypothesisId: string, context: string, data: any): strin
     return lines.join('\n');
 }
 
-function logToOutputChannel(hypothesisId: string, context: string, data: any) {
+async function logToOutputChannel(hypothesisId: string, context: string, data: LogData) {
     const logEntry = formatLogEntry(hypothesisId, context, data);
     
-    // Store in memory
-    inMemoryLogs.push(logEntry);
+    // Создаем RuntimeLog и добавляем в shared storage
+    // SharedLogStorage автоматически эмитит событие 'logAdded' для WebSocket клиентов
+    const runtimeLog: RuntimeLog = {
+        timestamp: new Date().toISOString(),
+        hypothesisId,
+        context,
+        data
+    };
+    await sharedStorage.addLog(runtimeLog);
     
     // Output to channel
     outputChannel.appendLine(logEntry);
     outputChannel.show(true);
+    
+    // Debug: Log that we're sending to dashboard
+    outputChannel.appendLine(`[DEBUG] Log added to storage: ${hypothesisId}, dashboard panel exists: ${!!panel}`);
 
-    // Send to WebView Dashboard if open
+    // Send to WebView Dashboard if open, or open it automatically
     if (panel) {
         const logData = {
             hypothesisId,
             context,
             data,
-            timestamp: new Date().toISOString()
+            timestamp: runtimeLog.timestamp
         };
         panel.webview.postMessage(logData);
+        outputChannel.appendLine(`[DEBUG] Sent log to existing dashboard: ${hypothesisId}`);
+    } else {
+        // Auto-open dashboard when first log arrives
+        // Wait a bit to ensure log is saved to storage before opening dashboard
+        await new Promise(resolve => setTimeout(resolve, 100));
+        outputChannel.appendLine(`[DEBUG] Opening dashboard automatically for log: ${hypothesisId}`);
+        openDashboard().then(() => {
+            if (panel) {
+                // The dashboard will receive initialLogs with all logs including this one
+                // But also send this specific log as a separate message to ensure it's received
+                setTimeout(() => {
+                    if (panel) {
+                        const logData = {
+                            hypothesisId,
+                            context,
+                            data,
+                            timestamp: runtimeLog.timestamp
+                        };
+                        panel.webview.postMessage(logData);
+                        outputChannel.appendLine(`[DEBUG] Sent log to newly opened dashboard: ${hypothesisId}`);
+                    }
+                }, 500); // Longer delay to ensure dashboard is fully ready
+            }
+        }).catch((error) => {
+            outputChannel.appendLine(`[ERROR] Failed to auto-open dashboard: ${error}`);
+        });
     }
     
     // Append to persistent log file
     appendLogToFile(hypothesisId, context, data);
 }
 
-function getInMemoryLogs(): string[] {
-    return [...inMemoryLogs];
+/**
+ * Настраивает WebSocket слушатели для real-time обновлений
+ */
+function setupWebSocketListeners(): void {
+    sharedStorage.on('logAdded', (log: RuntimeLog) => {
+        // Отправляем новый лог всем подключенным WebSocket клиентам
+        const message = JSON.stringify({
+            type: 'newLog',
+            log
+        });
+        
+        // Очищаем неактивные клиенты и отправляем сообщение активным
+        const config = vscode.workspace.getConfiguration('rooTrace');
+        const autoCleanup = config.get<boolean>('autoCleanupInactiveClients', true);
+        
+        const clientsToRemove: WebSocketClient[] = [];
+        wsClients.forEach(client => {
+            try {
+                if (client.readyState === 1) { // WebSocket.OPEN
+                    client.send(message);
+                } else {
+                    // Клиент закрыт или закрывается - помечаем для удаления
+                    if (autoCleanup) {
+                        clientsToRemove.push(client);
+                    }
+                }
+            } catch (error) {
+                // Ошибка при отправке - удаляем клиента
+                outputChannel.appendLine(`[WebSocket] Error sending to client: ${error}`);
+                if (autoCleanup) {
+                    clientsToRemove.push(client);
+                }
+            }
+        });
+        
+        // Удаляем неактивные клиенты если включена автоматическая очистка
+        if (autoCleanup) {
+            clientsToRemove.forEach(client => wsClients.delete(client));
+        }
+    });
+}
+
+/**
+ * Экспортирует логи в указанном формате
+ */
+async function exportLogs(format: ExportFormat): Promise<void> {
+    try {
+        const content = await LogExporter.exportLogs({
+            format,
+            includeMetadata: true
+        });
+        
+        const filePath = await LogExporter.saveToFile(content, format);
+        vscode.window.showInformationMessage(`Logs exported to ${path.basename(filePath)}`);
+        outputChannel.appendLine(`[EXPORT] Logs exported to ${filePath}`);
+    } catch (error) {
+        const errorMessage = `Failed to export logs: ${error}`;
+        vscode.window.showErrorMessage(errorMessage);
+        outputChannel.appendLine(`[EXPORT] ${errorMessage}`);
+    }
+}
+
+async function getInMemoryLogs(): Promise<string[]> {
+    // Конвертируем RuntimeLog[] в формат строк для обратной совместимости
+    const logs = await sharedStorage.getLogs();
+    return logs.map(log => formatLogEntry(log.hypothesisId, log.context, log.data));
 }
 
 // WebView Dashboard Functions
@@ -215,6 +595,25 @@ async function openDashboard() {
     try {
         if (panel) {
             panel.reveal(vscode.ViewColumn.Two);
+            // Send current logs when revealing existing panel
+            setTimeout(async () => {
+                if (panel) {
+                    const runtimeLogs = await sharedStorage.getLogs();
+                    if (runtimeLogs.length > 0) {
+                        const logsToSend = runtimeLogs.map(log => ({
+                            hypothesisId: log.hypothesisId,
+                            context: log.context,
+                            data: log.data,
+                            timestamp: log.timestamp
+                        }));
+                        panel.webview.postMessage({ 
+                            type: 'initialLogs', 
+                            logs: logsToSend
+                        });
+                        outputChannel.appendLine(`[DEBUG] Sent ${logsToSend.length} logs to existing dashboard`);
+                    }
+                }
+            }, 100);
             return;
         }
 
@@ -229,21 +628,71 @@ async function openDashboard() {
         );
 
         panel.webview.html = getWebviewContent([]);
-
+        
+        // Handle messages from the WebView (only clearLogs command)
+        panel.webview.onDidReceiveMessage((message: WebViewMessage) => {
+            if (message.command === 'clearLogs') {
+                // Clear logs from shared storage
+                sharedStorage.clear();
+                panel?.webview.postMessage({ type: 'clearLogs' });
+            }
+        });
+        
         panel.onDidDispose(() => {
             panel = undefined;
         });
-
-        // Send existing logs to dashboard
-        const logs = getInMemoryLogs();
-        panel.webview.postMessage({ type: 'initialLogs', logs });
+        
+        // Function to send logs to dashboard
+        const sendLogsToDashboard = async () => {
+            if (!panel) return;
+            
+            const runtimeLogs = await sharedStorage.getLogs();
+            outputChannel.appendLine(`[DEBUG] Dashboard opened, sending ${runtimeLogs.length} logs to dashboard`);
+            
+            if (runtimeLogs.length > 0) {
+                const logsToSend = runtimeLogs.map(log => ({
+                    hypothesisId: log.hypothesisId,
+                    context: log.context,
+                    data: log.data,
+                    timestamp: log.timestamp
+                }));
+                
+                panel.webview.postMessage({ 
+                    type: 'initialLogs', 
+                    logs: logsToSend
+                });
+                outputChannel.appendLine(`[DEBUG] Sent initialLogs message with ${logsToSend.length} logs`);
+            } else {
+                outputChannel.appendLine(`[DEBUG] No logs found in storage to send to dashboard`);
+            }
+        };
+        
+        // Wait a bit for the webview to be ready before sending logs
+        // This ensures the message listener is set up
+        // Try multiple times to ensure logs are delivered
+        setTimeout(sendLogsToDashboard, 300); // First attempt after 300ms
+        setTimeout(sendLogsToDashboard, 800); // Second attempt after 800ms (fallback)
 
     } catch (error) {
         vscode.window.showErrorMessage(`Failed to open dashboard: ${error}`);
     }
 }
 
-function getWebviewContent(logs: any[]): string {
+/**
+ * Экранирует HTML символы для безопасности
+ */
+function escapeHtml(text: string): string {
+    const map: { [key: string]: string } = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+    };
+    return text.replace(/[&<>"']/g, m => map[m]);
+}
+
+function getWebviewContent(logs: string[]): string {
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -273,6 +722,34 @@ function getWebviewContent(logs: any[]): string {
             --vscode-button-background: var(--vscode-button-background);
             --vscode-button-foreground: var(--vscode-button-foreground);
             --vscode-button-hoverBackground: var(--vscode-button-hoverBackground);
+        }
+        
+        .control-btn {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            padding: 6px 12px;
+            margin-right: 8px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 12px;
+            border-radius: 4px;
+        }
+        
+        .control-btn:hover {
+            background-color: var(--vscode-button-hoverBackground);
+        }
+        
+        .run-btn {
+            background-color: #007acc;
+        }
+        
+        .analyze-btn {
+            background-color: #0066cc;
+        }
+        
+        .confirm-btn {
+            background-color: #28a745;
         }
 
         * {
@@ -426,8 +903,8 @@ function getWebviewContent(logs: any[]): string {
             opacity: 0.5;
         }
     </style>
-</head>
-<body>
+  </head>
+  <body>
     <div class="header">
         <h1>AI Debugger Dashboard</h1>
         <button class="clear-btn" onclick="clearLogs()">Clear Logs</button>
@@ -448,11 +925,101 @@ function getWebviewContent(logs: any[]): string {
         // Listen for messages from extension
         window.addEventListener('message', event => {
             const message = event.data;
-
+            console.log('[Dashboard] Received message:', message.type || 'direct log', message);
+            
             if (message.type === 'initialLogs') {
-                message.logs.forEach(log => {
-                    addLogEntry(log);
-                });
+                if (Array.isArray(message.logs)) {
+                    message.logs.forEach(log => {
+                        // Handle both string format (legacy) and object format
+                        if (typeof log === 'string') {
+                            // Legacy format - parse string log
+                            const hypothesisMatch = log.match(/Hypothesis: (H\\d+)/);
+                            const contextMatch = log.match(/Context: "([^"]+)"/);
+                            const dataMatch = log.match(/Data: ({[^}]*})/);
+                            if (hypothesisMatch && contextMatch) {
+                                try {
+                                    addLogEntry({
+                                        hypothesisId: hypothesisMatch[1],
+                                        context: contextMatch[1],
+                                        data: dataMatch ? JSON.parse(dataMatch[1]) : {},
+                                        timestamp: new Date().toISOString()
+                                    });
+                                } catch (e) {
+                                    console.error('Error parsing legacy log:', e);
+                                }
+                            }
+                        } else if (log && typeof log === 'object') {
+                            // Object format - use directly
+                            addLogEntry({
+                                hypothesisId: log.hypothesisId || 'UNKNOWN',
+                                context: log.context || '',
+                                data: log.data || {},
+                                timestamp: log.timestamp || new Date().toISOString()
+                            });
+                        }
+                    });
+                }
+            } else if (message.type === 'clearLogs') {
+                logsContainer.innerHTML = \`
+                    <div class="empty-state">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <p>Waiting for debug logs...</p>
+                    </div>
+                \`;
+                hasLogs = false;
+            } else if (message.type === 'runtimeLogs') {
+                // Handle runtime logs from MCP tool
+                if (message.logs && message.logs.logs) {
+                    // Parse the logs from MCP response
+                    try {
+                        const parsedLogs = JSON.parse(message.logs.logs);
+                        if (parsedLogs.logs && Array.isArray(parsedLogs.logs)) {
+                            parsedLogs.logs.forEach(log => {
+                                addLogEntry({
+                                    hypothesisId: log.hypothesisId,
+                                    context: log.context,
+                                    data: log.data,
+                                    timestamp: log.timestamp
+                                });
+                            });
+                        } else {
+                            // If logs format is different, try to add as single log
+                            addLogEntry({
+                                hypothesisId: 'SYSTEM',
+                                context: 'Runtime Logs Response',
+                                data: parsedLogs,
+                                timestamp: new Date().toISOString()
+                            });
+                        }
+                    } catch (e) {
+                        // If parsing fails, add as single log entry
+                        addLogEntry({
+                            hypothesisId: 'SYSTEM',
+                            context: 'Raw Runtime Logs',
+                            data: message.logs,
+                            timestamp: new Date().toISOString()
+                        });
+                    }
+                } else {
+                    // If no structured logs, add the raw response
+                    addLogEntry({
+                        hypothesisId: 'SYSTEM',
+                        context: 'Runtime Logs Response',
+                        data: message.logs,
+                        timestamp: new Date().toISOString()
+                    });
+                }
+                
+                if (message.error) {
+                    addLogEntry({
+                        hypothesisId: 'ERROR',
+                        context: 'Runtime Logs Error',
+                        data: message.error,
+                        timestamp: new Date().toISOString()
+                    });
+                }
             } else if (message.hypothesisId !== undefined) {
                 // New log entry
                 addLogEntry({
@@ -465,6 +1032,8 @@ function getWebviewContent(logs: any[]): string {
         });
 
         function addLogEntry(log) {
+            console.log('[Dashboard] Adding log entry:', log.hypothesisId, log.context);
+            
             // Remove empty state if first log
             if (!hasLogs) {
                 logsContainer.innerHTML = '';
@@ -476,13 +1045,27 @@ function getWebviewContent(logs: any[]): string {
 
             const timestamp = new Date(log.timestamp).toLocaleTimeString();
 
+            // Экранируем пользовательские данные для безопасности
+            const safeHypothesisId = log.hypothesisId.replace(/[&<>"']/g, m => {
+                const map: { [key: string]: string } = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'};
+                return map[m];
+            });
+            const safeContext = log.context.replace(/[&<>"']/g, m => {
+                const map: { [key: string]: string } = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'};
+                return map[m];
+            });
+            const safeData = JSON.stringify(log.data, null, 2).replace(/[&<>"']/g, m => {
+                const map: { [key: string]: string } = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'};
+                return map[m];
+            });
+            
             entry.innerHTML = \`
                 <div class="log-header">
-                    <span class="hypothesis-tag \${log.hypothesisId}">\${log.hypothesisId}</span>
+                    <span class="hypothesis-tag \${safeHypothesisId}">\${safeHypothesisId}</span>
                     <span class="timestamp">\${timestamp}</span>
                 </div>
-                <div class="log-context">\${log.context}</div>
-                <div class="log-data">\${JSON.stringify(log.data, null, 2)}</div>
+                <div class="log-context">\${safeContext}</div>
+                <div class="log-data">\${safeData}</div>
             \`;
 
             // Prepend to show newest first
@@ -490,6 +1073,8 @@ function getWebviewContent(logs: any[]): string {
         }
 
         function clearLogs() {
+            const vscode = acquireVsCodeApi();
+            vscode.postMessage({ command: 'clearLogs' });
             logsContainer.innerHTML = \`
                 <div class="empty-state">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -507,7 +1092,8 @@ function getWebviewContent(logs: any[]): string {
 
 // Cleanup Functions
 async function cleanupDebugCode() {
-    if (!vscode.workspace.rootPath) {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
         vscode.window.showWarningMessage('No workspace opened. Cannot cleanup.');
         return;
     }
@@ -575,21 +1161,21 @@ async function cleanupDebugCode() {
             if (success) {
                 progress.report({ increment: 100, message: 'Cleaning config files...' });
 
-                // Remove .ai_debug_config file
-                if (vscode.workspace.rootPath) {
-                    const configPath = path.join(vscode.workspace.rootPath, '.ai_debug_config');
-                    if (fs.existsSync(configPath)) {
-                        fs.unlinkSync(configPath);
-                        outputChannel.appendLine('[CLEANUP] Removed .ai_debug_config');
-                    }
-                }
-                
-                // Remove .ai_debug_logs.json file
-                if (vscode.workspace.rootPath) {
-                    const logsPath = path.join(vscode.workspace.rootPath, '.ai_debug_logs.json');
-                    if (fs.existsSync(logsPath)) {
-                        fs.unlinkSync(logsPath);
-                        outputChannel.appendLine('[CLEANUP] Removed .ai_debug_logs.json');
+                // Remove .ai_debug_config and .ai_debug_logs.json files from all workspace folders
+                const workspaceFolders = vscode.workspace.workspaceFolders;
+                if (workspaceFolders && workspaceFolders.length > 0) {
+                    for (const folder of workspaceFolders) {
+                        const configPath = path.join(folder.uri.fsPath, '.ai_debug_config');
+                        if (fs.existsSync(configPath)) {
+                            fs.unlinkSync(configPath);
+                            outputChannel.appendLine(`[CLEANUP] Removed .ai_debug_config from ${folder.name}`);
+                        }
+                        
+                        const logsPath = path.join(folder.uri.fsPath, '.ai_debug_logs.json');
+                        if (fs.existsSync(logsPath)) {
+                            fs.unlinkSync(logsPath);
+                            outputChannel.appendLine(`[CLEANUP] Removed .ai_debug_logs.json from ${folder.name}`);
+                        }
                     }
                 }
 
@@ -609,6 +1195,61 @@ async function cleanupDebugCode() {
     });
 }
 
+// Rate limiting для защиты от злоупотреблений
+const rateLimitMap: Map<string, { count: number; resetTime: number }> = new Map();
+
+/**
+ * Получает настройки rate limiting из конфигурации VS Code
+ * @returns Объект с настройками rate limiting
+ */
+function getRateLimitConfig(): { maxRequests: number; windowMs: number } {
+    const config = vscode.workspace.getConfiguration('rooTrace');
+    return {
+        maxRequests: config.get<number>('rateLimitMaxRequests', RATE_LIMIT_CONFIG.DEFAULT_MAX_REQUESTS),
+        windowMs: config.get<number>('rateLimitWindowMs', RATE_LIMIT_CONFIG.DEFAULT_WINDOW_MS)
+    };
+}
+
+/**
+ * Проверяет rate limit для указанного IP адреса
+ * @param ip - IP адрес клиента
+ * @returns true если запрос разрешен, false если превышен лимит
+ */
+function checkRateLimit(ip: string): boolean {
+    const config = getRateLimitConfig();
+    const now = Date.now();
+    const limit = rateLimitMap.get(ip);
+    
+    if (!limit || now > limit.resetTime) {
+        rateLimitMap.set(ip, { count: 1, resetTime: now + config.windowMs });
+        return true;
+    }
+    
+    if (limit.count >= config.maxRequests) {
+        return false;
+    }
+    
+    limit.count++;
+    return true;
+}
+
+function getClientIP(req: http.IncomingMessage): string {
+    const forwarded = req.headers['x-forwarded-for'];
+    if (typeof forwarded === 'string') {
+        return forwarded.split(',')[0].trim();
+    }
+    return req.socket.remoteAddress || 'unknown';
+}
+
+/**
+ * Получает порт сервера из конфигурации VS Code
+ * @returns Порт сервера (по умолчанию 51234, 0 для случайного порта)
+ */
+function getServerPort(): number {
+    const config = vscode.workspace.getConfiguration('rooTrace');
+    return config.get<number>('serverPort', SERVER_CONFIG.DEFAULT_PORT);
+}
+
 async function startServer() {
     if (server) {
         outputChannel.appendLine('Debug sidecar server is already running.');
@@ -616,7 +1257,18 @@ async function startServer() {
     }
     
     // Create HTTP server with CORS support
-    server = http.createServer((req: http.IncomingMessage, res: http.ServerResponse) => {
+    server = http.createServer(async (req: http.IncomingMessage, res: http.ServerResponse) => {
+        const startTime = Date.now();
+        
+        // Rate limiting
+        const clientIP = getClientIP(req);
+        if (!checkRateLimit(clientIP)) {
+            metricsCollector.recordError();
+            res.writeHead(429, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'error', message: 'Rate limit exceeded' }));
+            return;
+        }
+        
         // Add CORS headers
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -629,16 +1281,32 @@ async function startServer() {
             return;
         }
         
+        // Health check endpoint
+        if (req.method === 'GET' && req.url === '/health') {
+            try {
+                const healthStatus = await metricsCollector.getHealthStatus(port, server !== null);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(healthStatus));
+                metricsCollector.recordRequest(Date.now() - startTime);
+            } catch (error) {
+                handleError(error, 'Extension.startServer', { endpoint: '/health' });
+                metricsCollector.recordError();
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ status: 'error', message: 'Health check failed' }));
+            }
+            return;
+        }
+        
         if (req.method === 'POST' && req.url === '/') {
             let body = '';
             
-            req.on('data', (chunk: any) => {
+            req.on('data', (chunk: Buffer | string) => {
                 body += chunk.toString();
             });
             
-            req.on('end', () => {
+            req.on('end', async () => {
                 try {
-                    const data = JSON.parse(body);
+                    const data = JSON.parse(body) as LogDataRequest;
                     
                     // Check if this is a hypothesis-driven debug request
                     if (data.hypothesisId && data.message) {
@@ -646,19 +1314,19 @@ async function startServer() {
                         const context = data.message || 'Debug data received';
                         const state = data.state || {};
                         
-                        logToOutputChannel(data.hypothesisId, context, state);
+                        await logToOutputChannel(data.hypothesisId, context, state);
                     } else {
                         // Legacy format - log as-is
-                        outputChannel.appendLine(`[${new Date().toISOString()}] Received debug data:`);
-                        outputChannel.appendLine(JSON.stringify(data, null, 2));
-                        outputChannel.show(true);
+                        logInfo('Received debug data (legacy format)', 'Extension.startServer', { data });
                     }
                     
                     // Send success response
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ status: 'success', message: 'Data received' }));
+                    metricsCollector.recordRequest(Date.now() - startTime);
                 } catch (error) {
-                    outputChannel.appendLine(`[${new Date().toISOString()}] Error parsing JSON: ${error}`);
+                    handleError(error, 'Extension.startServer', { endpoint: '/', action: 'parseJSON' });
+                    metricsCollector.recordError();
                     
                     // Send error response
                     res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -667,37 +1335,66 @@ async function startServer() {
             });
         } else if (req.method === 'GET' && req.url === '/logs') {
             // Return in-memory logs
-            const logs = getInMemoryLogs();
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ status: 'success', logs: logs }));
+            getInMemoryLogs().then(logs => {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ status: 'success', logs: logs }));
+                metricsCollector.recordRequest(Date.now() - startTime);
+            }).catch(error => {
+                handleError(error, 'Extension.startServer', { endpoint: '/logs' });
+                metricsCollector.recordError();
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ status: 'error', message: 'Failed to get logs' }));
+            });
         } else {
             // Send 404 for other routes
             res.writeHead(404, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ status: 'error', message: 'Route not found' }));
+            metricsCollector.recordRequest(Date.now() - startTime);
         }
     });
     
-    // Listen on a random available port
-    server.listen(0, 'localhost', () => {
-        const address = server?.address();
-        if (address && typeof address !== 'string') {
-            port = address.port;
-            outputChannel.appendLine(`Debug sidecar server started on port ${port}`);
-            
-            // Save port to file in workspace root
-            if (port !== null) {
-                savePortToFile(port);
+    // Get port from configuration (default: 51234)
+    const configuredPort = getServerPort();
+    const listenPort = configuredPort === 0 ? 0 : configuredPort; // 0 means random port
+    
+    // Try to listen on configured port, fallback to random if busy
+    const tryListen = (attemptPort: number) => {
+        server!.listen(attemptPort, 'localhost', () => {
+            const address = server?.address();
+            if (address && typeof address !== 'string') {
+                port = address.port;
+                logInfo(`Debug sidecar server started on port ${port}${attemptPort !== port ? ` (configured port ${attemptPort} was busy)` : ''}`, 'Extension.startServer');
                 
-                // Create the AI debug config file
-                createAIDebugConfig();
+                // Save port to file in workspace root (for backwards compatibility)
+                if (port !== null) {
+                    savePortToFile(port);
+                    
+                    // Create the AI debug config file
+                    createAIDebugConfig();
+                }
+            } else {
+                handleWarning('Failed to get server address', 'Extension.startServer');
             }
-        } else {
-            outputChannel.appendLine('Failed to get server address');
-        }
-    });
+        });
+    };
     
-    server.on('error', (err: Error) => {
-        outputChannel.appendLine(`Server error: ${err.message}`);
+    // Try configured port first, fallback to random if busy
+    if (listenPort === 0) {
+        // Random port
+        tryListen(0);
+    } else {
+        // Try configured port first
+        tryListen(listenPort);
+    }
+    
+    server.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EADDRINUSE' && listenPort !== 0) {
+            // Port is busy, try random port
+            handleWarning(`Port ${listenPort} is busy, trying random port...`, 'Extension.startServer');
+            tryListen(0);
+        } else {
+            handleError(err, 'Extension.startServer', { action: 'serverError' });
+        }
     });
 }
 
@@ -721,41 +1418,85 @@ async function stopServer() {
 }
 
 function savePortToFile(port: number) {
-    if (!vscode.workspace.rootPath) {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
         outputChannel.appendLine('No workspace opened. Cannot save port file.');
         return;
     }
     
-    const portFilePath = path.join(vscode.workspace.rootPath, '.debug_port');
-    fs.writeFileSync(portFilePath, port.toString(), 'utf8');
-    outputChannel.appendLine(`Port ${port} saved to ${portFilePath}`);
+    // Save port file for each workspace folder
+    for (const folder of workspaceFolders) {
+        const portFilePath = path.join(folder.uri.fsPath, '.debug_port');
+        try {
+            fs.writeFileSync(portFilePath, port.toString(), 'utf8');
+            outputChannel.appendLine(`Port ${port} saved to ${portFilePath}`);
+        } catch (error) {
+            outputChannel.appendLine(`Error saving port file to ${folder.name}: ${error}`);
+        }
+    }
 }
 
 function removePortFile() {
-    if (!vscode.workspace.rootPath) {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
         return;
     }
     
-    const portFilePath = path.join(vscode.workspace.rootPath, '.debug_port');
-    if (fs.existsSync(portFilePath)) {
-        fs.unlinkSync(portFilePath);
-        outputChannel.appendLine(`Removed port file: ${portFilePath}`);
+    for (const folder of workspaceFolders) {
+        const portFilePath = path.join(folder.uri.fsPath, '.debug_port');
+        if (fs.existsSync(portFilePath)) {
+            try {
+                fs.unlinkSync(portFilePath);
+                outputChannel.appendLine(`Removed port file: ${portFilePath}`);
+            } catch (error) {
+                outputChannel.appendLine(`Error removing port file from ${folder.name}: ${error}`);
+            }
+        }
     }
 }
 
+// Updated function to remove AI debug config files
 function removeAIDebugConfig() {
-    if (!vscode.workspace.rootPath) {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
         return;
     }
     
-    const configPath = path.join(vscode.workspace.rootPath, '.ai_debug_config');
-    if (fs.existsSync(configPath)) {
-        fs.unlinkSync(configPath);
-        outputChannel.appendLine(`Removed config file: ${configPath}`);
+    for (const folder of workspaceFolders) {
+        const configPath = path.join(folder.uri.fsPath, '.ai_debug_config');
+        if (fs.existsSync(configPath)) {
+            try {
+                fs.unlinkSync(configPath);
+                outputChannel.appendLine(`Removed config file: ${configPath}`);
+            } catch (error) {
+                outputChannel.appendLine(`Error removing config file from ${folder.name}: ${error}`);
+            }
+        }
     }
 }
 
 export function deactivate() {
+    console.error('[RooTrace] Extension DEACTIVATING...');
+    // Graceful degradation: завершаем сессию если есть активная
+    try {
+        const sessionManager = SessionManager.getInstance();
+        sessionManager.completeSession();
+    } catch (error) {
+        outputChannel.appendLine(`[DEACTIVATE] Error completing session: ${error}`);
+    }
+
+    // Закрываем WebSocket соединения
+    wsClients.forEach(client => {
+        try {
+            if (client.readyState === 1) {
+                client.close();
+            }
+        } catch (error) {
+            outputChannel.appendLine(`[DEACTIVATE] Error closing WebSocket client: ${error}`);
+        }
+    });
+    wsClients.clear();
+
     if (server) {
         server.close();
         server = null;
@@ -768,6 +1509,10 @@ export function deactivate() {
         removeAIDebugConfig();
     }
     
-    // Unregister MCP server
-    unregisterMcpServer();
+    // Unregister MCP server (graceful degradation - не падаем если ошибка)
+    try {
+        unregisterMcpServer();
+    } catch (error) {
+        outputChannel.appendLine(`[DEACTIVATE] Error unregistering MCP server: ${error}`);
+    }
 }

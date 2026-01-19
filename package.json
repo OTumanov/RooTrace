@@ -4,6 +4,10 @@
   "description": "Advanced debugging and tracing functionality with MCP integration for Roo Code",
   "version": "0.0.1",
   "publisher": "roo-trace-dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OTumanov/RooTrace.git"
+  },
   "engines": {
     "vscode": "^1.74.0"
   },
@@ -11,9 +15,7 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onCommand:roo-code.setRoleDebugger",
-    "workspaceContains:.ai_debug_config"
+    "*"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -37,8 +39,74 @@
       {
         "command": "ai-debugger.cleanup",
         "title": "Cleanup RooTrace Debug Code"
+      },
+      {
+        "command": "rooTrace.exportJSON",
+        "title": "Export Logs as JSON"
+      },
+      {
+        "command": "rooTrace.exportCSV",
+        "title": "Export Logs as CSV"
+      },
+      {
+        "command": "rooTrace.exportMarkdown",
+        "title": "Export Logs as Markdown"
+      },
+      {
+        "command": "rooTrace.exportHTML",
+        "title": "Export Logs as HTML"
       }
     ],
+    "configuration": {
+      "title": "RooTrace",
+      "properties": {
+        "rooTrace.maxLogs": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 100,
+          "maximum": 10000,
+          "description": "Maximum number of logs to keep in memory. Older logs will be removed when limit is reached."
+        },
+        "rooTrace.rateLimitMaxRequests": {
+          "type": "number",
+          "default": 100,
+          "minimum": 10,
+          "maximum": 1000,
+          "description": "Maximum number of HTTP requests allowed per minute per IP address."
+        },
+        "rooTrace.rateLimitWindowMs": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 1000,
+          "maximum": 300000,
+          "description": "Rate limit window in milliseconds (default: 60000 = 1 minute)."
+        },
+        "rooTrace.syntaxCheckTimeout": {
+          "type": "number",
+          "default": 10000,
+          "minimum": 1000,
+          "maximum": 60000,
+          "description": "Timeout for syntax validation checks in milliseconds."
+        },
+        "rooTrace.enableSyntaxValidation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable syntax validation after probe injection."
+        },
+        "rooTrace.autoCleanupInactiveClients": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically remove inactive WebSocket clients from the connection pool."
+        },
+        "rooTrace.serverPort": {
+          "type": "number",
+          "default": 51234,
+          "minimum": 1024,
+          "maximum": 65535,
+          "description": "Fixed port for RooTrace HTTP server. If port is busy, server will try next available port. Set to 0 to use random port (not recommended)."
+        }
+      }
+    },
     "mcpServers": {
       "roo-trace": {
         "command": "node",
@@ -51,6 +119,7 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "test": "jest",
     "test:mcp": "node scripts/test-mcp-integration.js",
     "verify": "node scripts/verify-build.js"
   },
@@ -64,6 +133,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.25.2"
+    "@modelcontextprotocol/sdk": "^1.25.2",
+    "js-yaml": "^4.1.1"
   }
 }

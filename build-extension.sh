@@ -42,7 +42,7 @@ echo "✓ Проект скомпилирован"
 
 # Упаковываем расширение в .vsix файл
 echo "Упаковываю расширение в .vsix файл..."
-yes y | vsce package || error_exit "Не удалось упаковать расширение"
+yes y | vsce package --allow-missing-repository || error_exit "Не удалось упаковать расширение"
 
 echo "✓ Расширение упаковано"
 

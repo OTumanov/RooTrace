@@ -3,6 +3,9 @@ import * as path from 'path';
 import * as os from 'os';
 import * as vscode from 'vscode';
 
+// Simple in‑memory lock to serialize file operations per file and avoid race conditions
+const fileOperationLocks: Map<string, Promise<void>> = new Map();
+
 export async function detectInstalledExtension(): Promise<'roo-code' | 'roo-cline' | null> {
   try {
     const extensions = vscode.extensions.all;
@@ -27,23 +30,50 @@ export async function detectInstalledExtension(): Promise<'roo-code' | 'roo-clin
 export async function registerMcpServer(context: any): Promise<void> {
   try {
     const installedExtension = await detectInstalledExtension();
-    console.log(`Обнаружено установленное расширение: ${installedExtension}`);
+    console.log(`[RooTrace] Обнаружено установленное расширение: ${installedExtension}`);
+    console.error(`[RooTrace] Обнаружено установленное расширение: ${installedExtension}`);
     
     // Use .roo/mcp.json in the workspace root
-    const workspaceRoot = vscode.workspace.rootPath || os.homedir();
-    const configDirPath = path.join(workspaceRoot, '.roo');
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      const errorMsg = '[RooTrace] No workspace folders, cannot register MCP server';
+      console.error(errorMsg);
+      throw new Error(errorMsg);
+    }
+    
+    // Register for each workspace folder
+    for (const folder of workspaceFolders) {
+      await registerMcpServerForWorkspace(context, folder.uri.fsPath, installedExtension);
+    }
+  } catch (error) {
+    const errorMsg = `Ошибка при регистрации MCP-сервера: ${error}`;
+    console.error(errorMsg);
+    throw error; // Пробрасываем ошибку дальше для обработки в activate
+  }
+}
+
+async function registerMcpServerForWorkspace(context: any, workspacePath: string, installedExtension: 'roo-code' | 'roo-cline' | null): Promise<void> {
+  try {
+    const configDirPath = path.join(workspacePath, '.roo');
     const configFilePath = path.join(configDirPath, 'mcp.json');
 
     // Создание директории, если она не существует
-    if (!fs.existsSync(configDirPath)) {
-      fs.mkdirSync(configDirPath, { recursive: true });
+    try {
+      await fs.promises.access(configDirPath, fs.constants.F_OK);
+    } catch {
+      await fs.promises.mkdir(configDirPath, { recursive: true });
     }
 
     // Чтение существующего файла конфигурации или создание нового
     let config: any = {};
-    if (fs.existsSync(configFilePath)) {
-      const configFileContent = fs.readFileSync(configFilePath, 'utf-8');
+    try {
+      const configFileContent = await fs.promises.readFile(configFilePath, 'utf-8');
       config = JSON.parse(configFileContent);
+    } catch (error) {
+      // Файл не существует - это нормально для новой конфигурации
+      if (error instanceof Error && !error.message.includes('ENOENT')) {
+        throw error;
+      }
     }
 
     // Абсолютный путь к mcp-server.js в директории расширения
@@ -51,13 +81,20 @@ export async function registerMcpServer(context: any): Promise<void> {
 
     // Проверяем, существует ли файл сервера
     if (!fs.existsSync(mcpServerPath)) {
-      console.error(`Файл mcp-сервера не найден: ${mcpServerPath}`);
-      return;
+      const errorMsg = `[RooTrace] Файл mcp-сервера не найден: ${mcpServerPath}`;
+      console.error(errorMsg);
+      console.error(`[RooTrace] Extension path: ${context.extensionPath}`);
+      console.error(`[RooTrace] Проверьте, что проект скомпилирован: npm run compile`);
+      throw new Error(`MCP server file not found: ${mcpServerPath}. Please compile the project first.`);
     }
 
     // Логирование информации о создании конфигурации
-    console.log(`Создание конфигурации MCP сервера в: ${configFilePath}`);
-    console.log(`Путь к MCP серверу: ${mcpServerPath}`);
+    const logMsg1 = `[RooTrace] Создание конфигурации MCP сервера в: ${configFilePath}`;
+    const logMsg2 = `[RooTrace] Путь к MCP серверу: ${mcpServerPath}`;
+    console.log(logMsg1);
+    console.log(logMsg2);
+    console.error(logMsg1);
+    console.error(logMsg2);
 
     if (installedExtension === 'roo-cline') {
       // Формат для Roo Cline: {"mcpServers": {"roo-trace": {"command": "node", "args": [...]}}}
@@ -162,34 +199,92 @@ export async function registerMcpServer(context: any): Promise<void> {
       // Добавляем новую конфигурацию RooTrace
       config.servers.push(rooTraceServer);
     }
-// Запись обновленной конфигурации в файл
-fs.writeFileSync(configFilePath, JSON.stringify(config, null, 2));
+    
+    // Запись обновленной конфигурации в файл
+    // Acquire lock for the file to prevent concurrent modifications
+    const previousLock = fileOperationLocks.get(configFilePath) || Promise.resolve();
+    let releaseLock: () => void;
+    const currentLock = new Promise<void>((res) => (releaseLock = res));
+    fileOperationLocks.set(configFilePath, previousLock.then(() => currentLock));
 
-console.log(`Конфигурация MCP сервера успешно создана в: ${configFilePath}`);
-console.log(`Конфигурация: ${JSON.stringify(config, null, 2)}`);
-} catch (error) {
-console.error('Ошибка при регистрации MCP-сервера:', error);
-}
+    try {
+      await fs.promises.writeFile(configFilePath, JSON.stringify(config, null, 2));
+    } finally {
+      // Release the lock
+      releaseLock!();
+    }
+
+    const successMsg = `[RooTrace] Конфигурация MCP сервера успешно создана в: ${configFilePath}`;
+    console.log(successMsg);
+    console.error(successMsg);
+    console.error(`[RooTrace] Конфигурация: ${JSON.stringify(config, null, 2)}`);
+  } catch (error) {
+    const errorMsg = `[RooTrace] Ошибка при регистрации MCP-сервера для ${workspacePath}: ${error}`;
+    console.error(errorMsg);
+    throw error; // Пробрасываем ошибку для обработки в activate
+  }
 }
 
 
 export async function unregisterMcpServer(): Promise<void> {
   try {
-    // Use .roo/mcp.json in the workspace root
-    const workspaceRoot = vscode.workspace.rootPath || os.homedir();
-    const configDirPath = path.join(workspaceRoot, '.roo');
-    const configFilePath = path.join(configDirPath, 'mcp.json');
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      console.error('[RooTrace] No workspace folders, cannot unregister MCP server');
+      return;
+    }
+    
+    // Unregister for each workspace folder
+    for (const folder of workspaceFolders) {
+      const configDirPath = path.join(folder.uri.fsPath, '.roo');
+      const configFilePath = path.join(configDirPath, 'mcp.json');
 
-    if (fs.existsSync(configFilePath)) {
-      const configFileContent = fs.readFileSync(configFilePath, 'utf-8');
-      const config: any = JSON.parse(configFileContent);
-
-      // Remove RooTrace server configuration
-      if (config.servers) {
-        config.servers = config.servers.filter((server: any) => server.name !== 'roo-trace');
+      try {
+        // Асинхронно проверяем, существует ли файл
+        await fs.promises.access(configFilePath, fs.constants.F_OK);
         
-        // Write updated configuration to file
-        fs.writeFileSync(configFilePath, JSON.stringify(config, null, 2));
+        const configFileContent = await fs.promises.readFile(configFilePath, 'utf-8');
+        const config: any = JSON.parse(configFileContent);
+
+        // Remove RooTrace server configuration
+        if (config.servers) {
+          config.servers = config.servers.filter((server: any) => server.name !== 'roo-trace');
+          
+          // Write updated configuration to file
+          // Acquire lock for the file to prevent concurrent modifications
+          const previousLock = fileOperationLocks.get(configFilePath) || Promise.resolve();
+          let releaseLock: () => void;
+          const currentLock = new Promise<void>((res) => (releaseLock = res));
+          fileOperationLocks.set(configFilePath, previousLock.then(() => currentLock));
+
+          try {
+            await fs.promises.writeFile(configFilePath, JSON.stringify(config, null, 2));
+          } finally {
+            // Release the lock
+            releaseLock!();
+          }
+          console.log(`[RooTrace] Unregistered MCP server from ${folder.name}`);
+        }
+        
+        // Also remove from mcpServers (Roo Cline format)
+        if (config.mcpServers && config.mcpServers['roo-trace']) {
+          delete config.mcpServers['roo-trace'];
+          
+          // Acquire lock for the file to prevent concurrent modifications
+          const previousLock = fileOperationLocks.get(configFilePath) || Promise.resolve();
+          let releaseLock: () => void;
+          const currentLock = new Promise<void>((res) => (releaseLock = res));
+          fileOperationLocks.set(configFilePath, previousLock.then(() => currentLock));
+
+          try {
+            await fs.promises.writeFile(configFilePath, JSON.stringify(config, null, 2));
+          } finally {
+            // Release the lock
+            releaseLock!();
+          }
+        }
+      } catch (error) {
+        console.error(`Ошибка при удалении регистрации MCP-сервера из ${folder.name}:`, error);
       }
     }
   } catch (error) {
