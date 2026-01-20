@@ -8,6 +8,7 @@ import { withFileLock } from './file-lock-utils';
 import { RuntimeLog, Hypothesis, LogData } from './types';
 import { handleError, logDebug } from './error-handler';
 import { WATCHER_CONFIG, STORAGE_CONFIG } from './constants';
+import { getRootraceFilePath } from './rootrace-dir-utils';
 
 // Re-export типы для обратной совместимости
 export type { RuntimeLog, Hypothesis, LogData };
@@ -267,22 +268,10 @@ export class SharedLogStorage extends EventEmitter {
    * Получает путь к файлу логов
    */
   private getLogFilePath(): string {
-    if (vscode) {
-      try {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (workspaceFolders && workspaceFolders.length > 0) {
-          const filePath = path.join(workspaceFolders[0].uri.fsPath, '.ai_debug_logs.json');
-          logDebug(`Using workspace log file path: ${filePath}`, 'SharedLogStorage.getLogFilePath');
-          return filePath;
-        }
-      } catch (e) {
-        // Игнорируем ошибки при доступе к workspace в MCP контексте
-        logDebug(`Error accessing workspace folders: ${e}`, 'SharedLogStorage.getLogFilePath');
-      }
-    }
-    const fallbackPath = path.join(process.cwd(), '.ai_debug_logs.json');
-    logDebug(`Using fallback log file path: ${fallbackPath}`, 'SharedLogStorage.getLogFilePath');
-    return fallbackPath;
+    // Используем .rootrace директорию для всех файлов
+    const filePath = getRootraceFilePath('ai_debug_logs.json');
+    logDebug(`Using .rootrace log file path: ${filePath}`, 'SharedLogStorage.getLogFilePath');
+    return filePath;
   }
   
   /**

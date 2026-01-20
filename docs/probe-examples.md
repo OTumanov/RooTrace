@@ -1,5 +1,45 @@
 # Примеры проб (инъекций в код) для тестирования
 
+⚠️ **ВАЖНО:** Эти примеры показывают, как выглядят пробы после генерации. Для Python файлов **ЗАПРЕЩЕНО** использовать `inject_probes` или `inject_multiple_probes`. Вместо этого используйте `apply_diff` (Block Rewrite) для замены функций/блоков целиком.
+
+## Поддержка Docker
+
+RooTrace автоматически определяет Docker окружение и настраивает пробы для работы как внутри контейнеров, так и на обычных машинах.
+
+### Автоматическое определение окружения
+
+**Python файлы:**
+- При первой инъекции пробы в начало файла добавляется переменная `_rootrace_host`
+- Пробы автоматически заменяют `localhost` на `_rootrace_host` в URL
+
+**Go файлы:**
+- При первой инъекции пробы в начало файла добавляется переменная `rootraceHost`
+- Пробы автоматически заменяют `localhost` на `rootraceHost` в URL
+
+### Цепочка определения хоста
+
+1. **Переменная окружения** `ROO_TRACE_HOST` (если установлена)
+2. **Docker окружение**: Проверка `/.dockerenv` или `/proc/self/cgroup`
+3. **host.docker.internal**: Если доступен (Docker Desktop для Mac/Windows, Docker 20.10+ для Linux)
+4. **Gateway IP**: Определяется через UDP соединение к 8.8.8.8:80 (в Docker контейнерах)
+5. **localhost**: По умолчанию (для обычных приложений)
+
+### Переопределение хоста
+
+Вы можете принудительно установить хост через переменную окружения:
+```bash
+export ROO_TRACE_HOST=172.17.0.1  # IP шлюза Docker
+# или
+export ROO_TRACE_HOST=host.docker.internal
+```
+
+### Логирование
+
+Пробы автоматически логируют:
+- В файл `~/.roo_probe_debug.log` (для Python)
+- В консоль (stderr) с префиксом `[RooTrace Probe]`
+- Включают информацию об используемом URL для диагностики
+
 ## Пример 1: http.client (рекомендуется для IFC/тяжелых операций)
 ```python
 # RooTrace [id: 7a1b] H1: измерение общего времени извлечения мешей
@@ -199,6 +239,96 @@ except:
 # RooTrace [id: 7g1h]: end
 ```
 
+---
+
+## Примеры для Go
+
+### Пример 11: Базовая проба для Go
+```go
+// RooTrace [id: g1a2] H1: проверка значения переменной
+go func() {
+    defer func() { recover() }()
+    serverURL := "http://localhost:51234/"
+    if rootraceHost != "" && strings.Contains(serverURL, "localhost") {
+        serverURL = strings.Replace(serverURL, "localhost", rootraceHost, 1)
+    }
+    jsonData := []byte(`{"hypothesisId":"H1","message":"checking variable value","state":{}}`)
+    req, _ := http.NewRequest("POST", serverURL, bytes.NewBuffer(jsonData))
+    req.Header.Set("Content-Type", "application/json")
+    client := &http.Client{Timeout: 100 * time.Millisecond}
+    client.Do(req)
+}()
+// RooTrace [id: g1a2]: end
+```
+
+### Пример 12: Проба с данными состояния
+```go
+// RooTrace [id: g2b3] H2: передача данных состояния
+go func() {
+    defer func() { recover() }()
+    serverURL := "http://localhost:51234/"
+    if rootraceHost != "" && strings.Contains(serverURL, "localhost") {
+        serverURL = strings.Replace(serverURL, "localhost", rootraceHost, 1)
+    }
+    stateJSON, _ := json.Marshal(map[string]interface{}{
+        "user_id": userID,
+        "request_count": requestCount,
+        "status": status,
+    })
+    jsonData := []byte(fmt.Sprintf(`{"hypothesisId":"H2","message":"processing request","state":%s}`, stateJSON))
+    req, _ := http.NewRequest("POST", serverURL, bytes.NewBuffer(jsonData))
+    req.Header.Set("Content-Type", "application/json")
+    client := &http.Client{Timeout: 100 * time.Millisecond}
+    client.Do(req)
+}()
+// RooTrace [id: g2b3]: end
+```
+
+### Пример 13: Проба в начале и конце функции
+```go
+func processUser(userID string) {
+    // RooTrace [id: g3c4] H3: начало обработки пользователя
+    go func() {
+        defer func() { recover() }()
+        serverURL := "http://localhost:51234/"
+        if rootraceHost != "" && strings.Contains(serverURL, "localhost") {
+            serverURL = strings.Replace(serverURL, "localhost", rootraceHost, 1)
+        }
+        jsonData := []byte(fmt.Sprintf(`{"hypothesisId":"H3","message":"processUser start","state":{"user_id":"%s"}}`, userID))
+        req, _ := http.NewRequest("POST", serverURL, bytes.NewBuffer(jsonData))
+        req.Header.Set("Content-Type", "application/json")
+        client := &http.Client{Timeout: 100 * time.Millisecond}
+        client.Do(req)
+    }()
+    // RooTrace [id: g3c4]: end
+    
+    // ... код функции ...
+    
+    // RooTrace [id: g4d5] H3: конец обработки пользователя
+    go func() {
+        defer func() { recover() }()
+        serverURL := "http://localhost:51234/"
+        if rootraceHost != "" && strings.Contains(serverURL, "localhost") {
+            serverURL = strings.Replace(serverURL, "localhost", rootraceHost, 1)
+        }
+        jsonData := []byte(fmt.Sprintf(`{"hypothesisId":"H3","message":"processUser end","state":{"user_id":"%s","processed":true}}`, userID))
+        req, _ := http.NewRequest("POST", serverURL, bytes.NewBuffer(jsonData))
+        req.Header.Set("Content-Type", "application/json")
+        client := &http.Client{Timeout: 100 * time.Millisecond}
+        client.Do(req)
+    }()
+    // RooTrace [id: g4d5]: end
+}
+```
+
+### Важно для Go
+
+- **Автоматические импорты**: Система автоматически добавляет необходимые импорты (`net/http`, `bytes`, `time`, `strings`, `encoding/json`, `fmt`) если их нет в файле
+- **Инициализация хоста**: Переменная `rootraceHost` автоматически добавляется в начало файла при первой инъекции пробы
+- **Асинхронное выполнение**: Пробы выполняются в отдельных goroutine через `go func()`, не блокируя основной код
+- **Обработка ошибок**: Используется `defer func() { recover() }()` для защиты от паники
+- **Docker поддержка**: Пробы автоматически используют `rootraceHost` вместо `localhost` в Docker окружении
+
 ## Важные замечания:
 
 1. **Timeout для тяжелых операций:** Для IFC-парсинга, многопоточности и CPU-intensive задач используйте `timeout=5.0` (НЕ 1.0, НЕ 0.1)
@@ -207,10 +337,48 @@ except:
 
 3. **Всегда оборачивайте в try-except:** Пробы не должны нарушать работу основного кода
 
-4. **Используйте уникальные ID:** Каждая проба должна иметь уникальный `[id: ...]` для идентификации
+4. **Используйте уникальные ID:** Каждая проба должна иметь уникальный `[id: ...]` для идентификации (генерируется автоматически)
 
-5. **Маркеры начала и конца:** Всегда закрывайте пробы маркером `# RooTrace [id: ...]: end`
+5. **Маркеры начала и конца:** Всегда закрывайте пробы маркером `# RooTrace [id: ...]: end` (добавляется автоматически)
 
 6. **Формат данных:** `state` должен быть сериализуемым JSON (dict, list, числа, строки)
 
 7. **Гипотезы:** Используйте H1-H5 для разных типов измерений (H1 - общее, H2 - детали, H3 - элементы, H4 - цвета, H5 - прочее)
+
+8. **Логирование:** Пробы автоматически логируют выполнение в файл `~/.roo_probe_debug.log` и в консоль (stderr) для диагностики
+
+9. **Docker поддержка:** Код проб автоматически определяет Docker окружение и использует правильный хост:
+   - **Python**: Использует переменную `_rootrace_host`, которая определяется при загрузке модуля
+   - **Go**: Использует переменную `rootraceHost`, которая определяется при загрузке пакета
+   - Автоматическая замена `localhost` на правильный хост (host.docker.internal в Docker, localhost вне Docker)
+
+10. **Python файлы:** ⚠️ Для Python файлов эти примеры показывают только формат проб. Используйте `apply_diff` (Block Rewrite) вместо `inject_probes` для вставки проб в Python код.
+
+11. **Go файлы:** Для Go файлов пробы могут быть вставлены через `inject_probes`. Система автоматически:
+    - Добавляет необходимые импорты (`net/http`, `bytes`, `time`, `strings`)
+    - Вставляет инициализацию `rootraceHost` в начало файла при первой инъекции
+    - Использует `rootraceHost` в пробах для правильного определения хоста
+
+## Генерация проб
+
+Пробы генерируются автоматически функцией `generateProbeCode()` в `code-injector.ts`.
+
+### Python
+
+Для Python используется `urllib.request` с поддержкой Docker и улучшенным логированием:
+- Автоматическое определение Docker окружения через `_rootrace_host`
+- Логирование в файл `~/.roo_probe_debug.log` и в консоль (stderr)
+- Обработку ошибок с полным traceback
+- Поддержку переменной окружения `ROO_TRACE_HOST` для переопределения хоста
+
+### Go
+
+Для Go используется стандартная библиотека `net/http`:
+- Автоматическое определение Docker окружения через `rootraceHost`
+- Асинхронное выполнение через `go func()`
+- Поддержку переменной окружения `ROO_TRACE_HOST` для переопределения хоста
+- Автоматическое добавление необходимых импортов
+
+### Другие языки
+
+Поддерживаются также JavaScript, TypeScript, Java, Rust, C++, PHP, Ruby, C#, Swift, Kotlin и другие языки. Для каждого языка используется соответствующий HTTP клиент.

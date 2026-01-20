@@ -12,6 +12,7 @@ import { initializeErrorHandler, handleError, logInfo, logDebug, handleWarning }
 import { metricsCollector } from './metrics';
 import { SERVER_CONFIG, RATE_LIMIT_CONFIG } from './constants';
 import { LogData } from './types';
+import { getRootraceFilePath, ensureRootraceInGitignore } from './rootrace-dir-utils';
 
 // Интерфейсы для типизации
 interface WebSocketClient {
@@ -52,11 +53,15 @@ const sharedStorage = SharedLogStorage.getInstance();
 
 // Function to get log file path for current workspace
 function getLogFilePath(): string {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (workspaceFolders && workspaceFolders.length > 0) {
-        return path.join(workspaceFolders[0].uri.fsPath, '.ai_debug_logs.json');
-    }
-    return path.join('.', '.ai_debug_logs.json');
+    return getRootraceFilePath('ai_debug_logs.json');
+}
+
+function getReadLogsApprovalFilePath(): string {
+    return getRootraceFilePath('allow-read-runtime-logs.json');
+}
+
+function getAutoDebugApprovalFilePath(): string {
+    return getRootraceFilePath('allow-auto-debug.json');
 }
 
 // Function to append log entries to the persistent file
@@ -113,6 +118,8 @@ interface AIDebugConfig {
 }
 
 export async function activate(context: vscode.ExtensionContext) {
+    // Убеждаемся, что .rootrace существует и добавлен в .gitignore при активации
+    ensureRootraceInGitignore();
     // КРИТИЧНО: Логируем в консоль ПЕРВЫМ делом, до создания output channel
     // Это поможет увидеть проблему даже если output channel не создастся
     console.error('='.repeat(60));
@@ -161,8 +168,27 @@ export async function activate(context: vscode.ExtensionContext) {
     // MCP Commands for dashboard buttons
     const readRuntimeLogsCommand = vscode.commands.registerCommand('rooTrace.readRuntimeLogs', async () => {
         try {
+            // USER GATE: allow read_runtime_logs ONLY when user pressed this button/command
+            const approvalPath = getReadLogsApprovalFilePath();
+            try {
+                fs.writeFileSync(
+                    approvalPath,
+                    JSON.stringify({ approvedAt: new Date().toISOString(), approvedAtMs: Date.now() }, null, 2),
+                    'utf8'
+                );
+            } catch (e) {
+                outputChannel.appendLine(`[RooTrace] ERROR: Failed to write read-logs approval file: ${e}`);
+            }
+
             // Call the MCP tool directly
             const result = await vscode.commands.executeCommand('mcp-roo-trace-read_runtime_logs');
+
+            // Best-effort cleanup: prevent agent from reusing approval later
+            try {
+                if (fs.existsSync(approvalPath)) fs.unlinkSync(approvalPath);
+            } catch {
+                // ignore
+            }
             return result;
         } catch (error) {
             handleError(error, 'Extension.readRuntimeLogs', { action: 'readRuntimeLogs' });
@@ -181,23 +207,56 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     });
     
-    // Command to show user instructions - БЕЗ кнопок и таймеров
-    // ⚠️ КРИТИЧЕСКИ ВАЖНО: НЕ используем showInformationMessage с кнопками, так как это вызывает таймеры
-    // Вместо этого просто показываем сообщение в Output Channel и возвращаем инструкции для бота
+    // Command to show user instructions - popup с кнопками (без таймеров)
     const showUserInstructionsCommand = vscode.commands.registerCommand('rooTrace.showUserInstructions', async (instructions: string, stepNumber?: number) => {
         const stepNum = stepNumber || 1;
-        const message = `📋 Шаг ${stepNum}: Инструментация готова!\n\n${instructions}\n\n**Что делать дальше:**\n1. Запустите код и воспроизведите ошибку\n2. Выполните действия, которые вызывают проблему\n3. После завершения работы кода напишите в чат "Logs ready" для анализа логов\n4. Если проблема решена, напишите "Проблема устранена" для очистки сессии\n\n⚠️ ВАЖНО: Нет таймеров. Вы контролируете процесс.`;
-        
-        // Показываем сообщение в Output Channel вместо всплывающего окна с кнопками
-        outputChannel.appendLine(`\n${message}\n`);
+        const message = `Шаг ${stepNum}: ${instructions}`;
+
+        // Всегда дублируем в Output Channel (чтобы не потерялось)
+        outputChannel.appendLine(`\n[USER INSTRUCTIONS] ${message}\n`);
         outputChannel.show(true);
-        
-        // Возвращаем инструкции для бота - он покажет их в чате БЕЗ кнопок
-        return { 
-            action: 'instructions_shown', 
-            message: 'Инструкции показаны в Output Channel. Пользователь должен написать "Logs ready" когда будет готов.',
-            instructions: message
-        };
+
+        const choice = await vscode.window.showInformationMessage(
+            message,
+            { modal: true },
+            'Открыть дашборд',
+            'Прочитать логи (кнопка)',
+            'Я выполнил (Logs ready)',
+            'Разрешить авто-отладку (5 мин)',
+            'Очистить сессию',
+            'Закрыть'
+        );
+
+        if (choice === 'Открыть дашборд') {
+            await openDashboard();
+        } else if (choice === 'Прочитать логи (кнопка)') {
+            // Это и есть “кнопка пользователя”: разрешаем и читаем логи через rooTrace.readRuntimeLogs
+            await vscode.commands.executeCommand('rooTrace.readRuntimeLogs');
+        } else if (choice === 'Я выполнил (Logs ready)') {
+            await openDashboard();
+            vscode.window.showInformationMessage('Ок. Теперь напишите в чат: "Logs ready".');
+        } else if (choice === 'Очистить сессию') {
+            try {
+                await vscode.commands.executeCommand('rooTrace.clearSession');
+                vscode.window.showInformationMessage('Сессия отладки очищена.');
+            } catch (error) {
+                vscode.window.showErrorMessage(`Ошибка при очистке сессии: ${error}`);
+            }
+        } else if (choice === 'Разрешить авто-отладку (5 мин)') {
+            const autoPath = getAutoDebugApprovalFilePath();
+            try {
+                fs.writeFileSync(
+                    autoPath,
+                    JSON.stringify({ approvedAt: new Date().toISOString(), approvedAtMs: Date.now(), ttlMs: 5 * 60 * 1000 }, null, 2),
+                    'utf8'
+                );
+                vscode.window.showInformationMessage('Авто-отладка разрешена на 5 минут: агент сможет сам читать логи.');
+            } catch (e) {
+                vscode.window.showErrorMessage(`Не удалось сохранить разрешение авто-отладки: ${e}`);
+            }
+        }
+
+        return { action: 'instructions_shown', choice: choice || null };
     });
     
     // Commands for user instructions buttons (legacy, для обратной совместимости)
@@ -318,6 +377,81 @@ export async function activate(context: vscode.ExtensionContext) {
             await RoleManager.syncRoleWithRoo(context);
         })
     );
+
+    // Автоматически обновляем .roomodes при изменении prompts/ai-debugger-prompt.md
+    const folders = vscode.workspace.workspaceFolders;
+    if (folders) {
+        for (const folder of folders) {
+            const promptFilePath = path.join(folder.uri.fsPath, 'prompts', 'ai-debugger-prompt.md');
+            if (fs.existsSync(promptFilePath)) {
+                fs.watchFile(promptFilePath, { interval: 1000 }, async (curr, prev) => {
+                    if (curr.mtime > prev.mtime) {
+                        outputChannel.appendLine('[RooTrace] Detected change in ai-debugger-prompt.md, updating .roomodes...');
+                        try {
+                            await RoleManager.syncRoleWithRoo(context);
+                            outputChannel.appendLine('[RooTrace] .roomodes updated successfully');
+                        } catch (error) {
+                            outputChannel.appendLine(`[RooTrace] ERROR: Failed to update .roomodes: ${error}`);
+                        }
+                    }
+                });
+                context.subscriptions.push({
+                    dispose: () => {
+                        fs.unwatchFile(promptFilePath);
+                    }
+                });
+            }
+        }
+    }
+
+    // UI bridge for MCP: .roo-trace-ui.json -> real VS Code popup with buttons + response file
+    if (folders) {
+        for (const folder of folders) {
+            // Убеждаемся, что .rootrace существует и добавлен в .gitignore
+            ensureRootraceInGitignore();
+            const uiEventPath = getRootraceFilePath('ui.json');
+            const uiResponsePath = getRootraceFilePath('ui-response.json');
+            fs.watchFile(uiEventPath, { interval: 500 }, async (curr, prev) => {
+                if (curr.mtime <= prev.mtime) return;
+                try {
+                    const raw = fs.readFileSync(uiEventPath, 'utf8');
+                    const evt = JSON.parse(raw) as { type?: string; requestId?: string; instructions?: string; stepNumber?: number };
+                    if (evt?.type === 'show_user_instructions' && typeof evt.instructions === 'string') {
+                        const res = await vscode.commands.executeCommand(
+                            'rooTrace.showUserInstructions',
+                            evt.instructions,
+                            evt.stepNumber
+                        ) as any;
+
+                        // Пишем ответ для MCP-сервера, чтобы он мог "остановиться" до клика пользователя
+                        try {
+                            fs.writeFileSync(
+                                uiResponsePath,
+                                JSON.stringify({ requestId: evt.requestId, choice: res?.choice ?? null, at: new Date().toISOString() }, null, 2),
+                                'utf8'
+                            );
+                        } catch (e) {
+                            outputChannel.appendLine(`[RooTrace] ERROR: Failed to write UI response: ${e}`);
+                        }
+                    }
+
+                    // Чтобы не показывать popup повторно при случайных перезаписях — очищаем event-файл
+                    try {
+                        fs.writeFileSync(uiEventPath, '', 'utf8');
+                    } catch {
+                        // ignore
+                    }
+                } catch (e) {
+                    outputChannel.appendLine(`[RooTrace] ERROR: Failed to process UI event: ${e}`);
+                }
+            });
+            context.subscriptions.push({
+                dispose: () => {
+                    fs.unwatchFile(uiEventPath);
+                }
+            });
+        }
+    }
     
     context.subscriptions.push(
         startCommand,
@@ -353,9 +487,12 @@ async function createAIDebugConfig() {
         return;
     }
     
+    // Убеждаемся, что .rootrace существует и добавлен в .gitignore
+    ensureRootraceInGitignore();
+    
     // Create config for each workspace folder
     for (const folder of workspaceFolders) {
-        const configPath = path.join(folder.uri.fsPath, '.ai_debug_config');
+        const configPath = getRootraceFilePath('ai_debug_config');
         const config: AIDebugConfig = {
             url: `http://localhost:${port}/`,
             status: "active",
@@ -376,7 +513,7 @@ async function createAIDebugConfig() {
 
 async function clearLogs() {
     // Очищаем shared storage
-    sharedStorage.clear();
+    await sharedStorage.clear();
     
     outputChannel.clear();
     outputChannel.appendLine('[SYSTEM] Logs cleared.');
@@ -386,10 +523,8 @@ async function clearLogs() {
     try {
         const logFilePath = getLogFilePath();
         if (fs.existsSync(logFilePath)) {
-            // Encrypt empty array and write to file
-            const encryptionKey = getEncryptionKey();
-            const encryptedEmptyArray = encryptObject([], encryptionKey);
-            fs.writeFileSync(logFilePath, encryptedEmptyArray, 'utf8');
+            // Пишем пустой массив через SharedLogStorage (единый формат/локи)
+            // Файл уже очищен вызовом sharedStorage.clear(); оставляем этот блок как no-op на случай кастомных сценариев.
         }
     } catch (error) {
         outputChannel.appendLine(`[SYSTEM] Error clearing persistent log file: ${error}`);
@@ -1477,22 +1612,17 @@ async function cleanupDebugCode() {
             if (success) {
                 progress.report({ increment: 100, message: 'Cleaning config files...' });
 
-                // Remove .ai_debug_config and .ai_debug_logs.json files from all workspace folders
-                const workspaceFolders = vscode.workspace.workspaceFolders;
-                if (workspaceFolders && workspaceFolders.length > 0) {
-                    for (const folder of workspaceFolders) {
-                        const configPath = path.join(folder.uri.fsPath, '.ai_debug_config');
-                        if (fs.existsSync(configPath)) {
-                            fs.unlinkSync(configPath);
-                            outputChannel.appendLine(`[CLEANUP] Removed .ai_debug_config from ${folder.name}`);
-                        }
-                        
-                        const logsPath = path.join(folder.uri.fsPath, '.ai_debug_logs.json');
-                        if (fs.existsSync(logsPath)) {
-                            fs.unlinkSync(logsPath);
-                            outputChannel.appendLine(`[CLEANUP] Removed .ai_debug_logs.json from ${folder.name}`);
-                        }
-                    }
+                // Remove .ai_debug_config and .ai_debug_logs.json files from .rootrace directory
+                const configPath = getRootraceFilePath('ai_debug_config');
+                if (fs.existsSync(configPath)) {
+                    fs.unlinkSync(configPath);
+                    outputChannel.appendLine(`[CLEANUP] Removed .ai_debug_config`);
+                }
+                
+                const logsPath = getRootraceFilePath('ai_debug_logs.json');
+                if (fs.existsSync(logsPath)) {
+                    fs.unlinkSync(logsPath);
+                    outputChannel.appendLine(`[CLEANUP] Removed .ai_debug_logs.json`);
                 }
 
                 const message = `Cleanup complete! Modified ${filesModified} files, removed ${markersRemoved} debug markers.`;
@@ -1764,53 +1894,40 @@ function savePortToFile(port: number) {
         return;
     }
     
-    // Save port file for each workspace folder
-    for (const folder of workspaceFolders) {
-        const portFilePath = path.join(folder.uri.fsPath, '.debug_port');
-        try {
-            fs.writeFileSync(portFilePath, port.toString(), 'utf8');
-            outputChannel.appendLine(`Port ${port} saved to ${portFilePath}`);
-        } catch (error) {
-            outputChannel.appendLine(`Error saving port file to ${folder.name}: ${error}`);
-        }
+    // Убеждаемся, что .rootrace существует и добавлен в .gitignore
+    ensureRootraceInGitignore();
+    
+    // Save port file to .rootrace directory
+    const portFilePath = getRootraceFilePath('debug_port');
+    try {
+        fs.writeFileSync(portFilePath, port.toString(), 'utf8');
+        outputChannel.appendLine(`Port ${port} saved to ${portFilePath}`);
+    } catch (error) {
+        outputChannel.appendLine(`Error saving port file: ${error}`);
     }
 }
 
 function removePortFile() {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders || workspaceFolders.length === 0) {
-        return;
-    }
-    
-    for (const folder of workspaceFolders) {
-        const portFilePath = path.join(folder.uri.fsPath, '.debug_port');
-        if (fs.existsSync(portFilePath)) {
-            try {
-                fs.unlinkSync(portFilePath);
-                outputChannel.appendLine(`Removed port file: ${portFilePath}`);
-            } catch (error) {
-                outputChannel.appendLine(`Error removing port file from ${folder.name}: ${error}`);
-            }
+    const portFilePath = getRootraceFilePath('debug_port');
+    if (fs.existsSync(portFilePath)) {
+        try {
+            fs.unlinkSync(portFilePath);
+            outputChannel.appendLine(`Removed port file: ${portFilePath}`);
+        } catch (error) {
+            outputChannel.appendLine(`Error removing port file: ${error}`);
         }
     }
 }
 
 // Updated function to remove AI debug config files
 function removeAIDebugConfig() {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders || workspaceFolders.length === 0) {
-        return;
-    }
-    
-    for (const folder of workspaceFolders) {
-        const configPath = path.join(folder.uri.fsPath, '.ai_debug_config');
-        if (fs.existsSync(configPath)) {
-            try {
-                fs.unlinkSync(configPath);
-                outputChannel.appendLine(`Removed config file: ${configPath}`);
-            } catch (error) {
-                outputChannel.appendLine(`Error removing config file from ${folder.name}: ${error}`);
-            }
+    const configPath = getRootraceFilePath('ai_debug_config');
+    if (fs.existsSync(configPath)) {
+        try {
+            fs.unlinkSync(configPath);
+            outputChannel.appendLine(`Removed config file: ${configPath}`);
+        } catch (error) {
+            outputChannel.appendLine(`Error removing config file: ${error}`);
         }
     }
 }

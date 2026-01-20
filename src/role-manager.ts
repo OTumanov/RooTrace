@@ -143,6 +143,8 @@ export class RoleManager {
     }
 
     private static async updateProjectModes(workspacePath: string, context: vscode.ExtensionContext) {
+        // КРИТИЧЕСКИ ВАЖНО: .roomodes должен быть в корне проекта, а не в .rootrace!
+        // Roo Code читает .roomodes из корня workspace
         const roomodesPath = path.join(workspacePath, '.roomodes');
         const extensionVersion = context.extension.packageJSON.version;
         

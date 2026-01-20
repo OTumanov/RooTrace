@@ -113,6 +113,9 @@ async function registerMcpServerForWorkspace(context: any, workspacePath: string
       config.mcpServers['roo-trace'] = {
         command: 'node',
         args: [mcpServerPath],
+        env: {
+          ROO_TRACE_WORKSPACE: workspacePath
+        },
         alwaysAllow: [
           'read_runtime_logs',
           'get_debug_status',
@@ -129,7 +132,10 @@ async function registerMcpServerForWorkspace(context: any, workspacePath: string
         handler: {
           type: 'stdio',
           command: 'node',
-          args: [mcpServerPath]
+          args: [mcpServerPath],
+          env: {
+            ROO_TRACE_WORKSPACE: workspacePath
+          }
         },
         tools: [
           {
@@ -143,6 +149,14 @@ async function registerMcpServerForWorkspace(context: any, workspacePath: string
                   description: 'ID сессии для получения логов (если не указан, возвращаются логи текущей сессии)'
                 }
               }
+            }
+          },
+          {
+            name: 'clear_logs',
+            description: 'Очищает ТОЛЬКО логи (без удаления проб/гипотез). Аналог кнопки очистки логов на дашборде.',
+            inputSchema: {
+              type: 'object',
+              properties: {}
             }
           },
           {

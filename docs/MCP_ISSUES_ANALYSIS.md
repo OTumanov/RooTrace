@@ -27,7 +27,7 @@ this.server.setRequestHandler(InitializeRequestSchema, async (request) => {
     },
     serverInfo: {
       name: 'RooTrace',
-      version: '1.0.0'
+      version: '0.0.1'
     }
   };
 });
@@ -97,7 +97,7 @@ default:
 **Проблема**: Логи приходят на HTTP сервер (`extension.ts`), но MCP сервер (`mcp-handler.ts`) имеет свой отдельный `DebugSession`, который не получает эти логи.
 
 **Текущее состояние**:
-- HTTP сервер сохраняет логи в `inMemoryLogs` и `.ai_debug_logs.json`
+- HTTP сервер сохраняет логи в `SharedLogStorage` и `.rootrace/ai_debug_logs.json`
 - MCP сервер использует отдельный `debugSession` с пустыми логами
 - `read_runtime_logs` всегда возвращает пустой массив
 

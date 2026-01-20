@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import * as http from 'http';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { getRootraceFilePath } from './rootrace-dir-utils';
 
 const execAsync = promisify(exec);
 
@@ -26,9 +27,72 @@ export class RooTraceMCPHandler {
   private server: Server | null = null;
   private startTime: number = Date.now();
   private committedFiles: Set<string> = new Set(); // Трекер файлов, для которых был сделан коммит
+  private static readonly READ_LOGS_APPROVAL_FILE = 'allow-read-runtime-logs.json';
+  private static readonly READ_LOGS_APPROVAL_MAX_AGE_MS = 2 * 60 * 1000; // 2 minutes
+  private static readonly AUTO_DEBUG_APPROVAL_FILE = 'allow-auto-debug.json';
+  private static readonly AUTO_DEBUG_APPROVAL_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes (user-granted)
 
   constructor() {
     // EventEmitter удален, так как не использовался
+  }
+
+  private getWorkspaceRootForFiles(): string {
+    const envWorkspace = process.env.ROO_TRACE_WORKSPACE || process.env.ROO_TRACE_WORKSPACE_ROOT;
+    if (envWorkspace && typeof envWorkspace === 'string' && envWorkspace.trim().length > 0) {
+      return envWorkspace.trim();
+    }
+    return process.cwd();
+  }
+
+  /**
+   * Разрешение на чтение логов должно приходить ТОЛЬКО от пользователя (кнопкой в UI).
+   * MCP-сервер не должен позволять агенту дергать read_runtime_logs самостоятельно.
+   */
+  private checkReadRuntimeLogsApproval(): { allowed: boolean; reason?: string } {
+    try {
+      // Long-lived (but expiring) user grant: allow the agent to read logs without pressing the button each time.
+      // This is still a USER action (granted via popup button), just less strict for hands-free debugging.
+      const autoPath = getRootraceFilePath(RooTraceMCPHandler.AUTO_DEBUG_APPROVAL_FILE);
+      if (fs.existsSync(autoPath)) {
+        try {
+          const rawAuto = fs.readFileSync(autoPath, 'utf8');
+          const dataAuto = JSON.parse(rawAuto) as { approvedAt?: string; approvedAtMs?: number };
+          const approvedAtMsAuto =
+            typeof dataAuto.approvedAtMs === 'number'
+              ? dataAuto.approvedAtMs
+              : (dataAuto.approvedAt ? Date.parse(dataAuto.approvedAt) : NaN);
+          if (Number.isFinite(approvedAtMsAuto)) {
+            const ageAuto = Date.now() - approvedAtMsAuto;
+            if (ageAuto >= 0 && ageAuto <= RooTraceMCPHandler.AUTO_DEBUG_APPROVAL_MAX_AGE_MS) {
+              return { allowed: true };
+            }
+          }
+        } catch {
+          // ignore malformed auto grant; fall back to strict gate
+        }
+      }
+
+      const approvalPath = getRootraceFilePath(RooTraceMCPHandler.READ_LOGS_APPROVAL_FILE);
+      if (!fs.existsSync(approvalPath)) {
+        return { allowed: false, reason: 'No user approval file present' };
+      }
+      const raw = fs.readFileSync(approvalPath, 'utf8');
+      const data = JSON.parse(raw) as { approvedAt?: string; approvedAtMs?: number };
+      const approvedAtMs =
+        typeof data.approvedAtMs === 'number'
+          ? data.approvedAtMs
+          : (data.approvedAt ? Date.parse(data.approvedAt) : NaN);
+      if (!Number.isFinite(approvedAtMs)) {
+        return { allowed: false, reason: 'Approval file malformed' };
+      }
+      const age = Date.now() - approvedAtMs;
+      if (age < 0 || age > RooTraceMCPHandler.READ_LOGS_APPROVAL_MAX_AGE_MS) {
+        return { allowed: false, reason: `Approval expired (ageMs=${age})` };
+      }
+      return { allowed: true };
+    } catch (e) {
+      return { allowed: false, reason: `Approval check error: ${e instanceof Error ? e.message : String(e)}` };
+    }
   }
 
   /**
@@ -149,6 +213,14 @@ export class RooTraceMCPHandler {
               description: 'ID сессии для получения логов (если не указан, возвращаются логи текущей сессии)',
             }
           }
+        }
+      },
+      {
+        name: 'clear_logs',
+        description: 'Очищает ТОЛЬКО логи (без удаления проб/гипотез). Аналог кнопки очистки логов на дашборде.',
+        inputSchema: {
+          type: 'object',
+          properties: {}
         }
       },
       {
@@ -339,6 +411,23 @@ export class RooTraceMCPHandler {
         switch (name) {
           case 'read_runtime_logs': {
             const { sessionId } = args as { sessionId?: string };
+            const approval = this.checkReadRuntimeLogsApproval();
+            if (!approval.allowed) {
+              result = {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    success: false,
+                    errorCode: 'FORBIDDEN_USER_ACTION_REQUIRED',
+                    error: 'FORBIDDEN: read_runtime_logs must be triggered by the USER via button (dashboard/popup).',
+                    reason: approval.reason || 'not approved',
+                    requiredAction: 'Click the "Read logs" / "Logs ready" button in VS Code UI.'
+                  })
+                }],
+                isError: true
+              };
+              break;
+            }
             // Принудительно перезагружаем логи из файла перед чтением (для синхронизации с HTTP сервером)
             await sharedStorage.reloadLogsFromFile();
             const logs = await sharedStorage.getLogs();
@@ -352,6 +441,35 @@ export class RooTraceMCPHandler {
                 })
               }]
             };
+            break;
+          }
+
+          case 'clear_logs': {
+            try {
+              await sharedStorage.clear();
+              result = {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    success: true,
+                    message: 'Logs cleared.',
+                    clearedAt: new Date().toISOString()
+                  })
+                }]
+              };
+            } catch (e) {
+              result = {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    success: false,
+                    errorCode: 'CLEAR_LOGS_FAILED',
+                    error: e instanceof Error ? e.message : String(e)
+                  })
+                }],
+                isError: true
+              };
+            }
             break;
           }
 
@@ -452,7 +570,7 @@ export class RooTraceMCPHandler {
                 // Пытаемся найти файлы с маркерами через рекурсивный поиск
                 // Но только если у нас есть доступ к workspace
                 try {
-                  const workspaceRoot = process.cwd();
+                  const workspaceRoot = this.getWorkspaceRootForFiles();
                   if (workspaceRoot && fs.existsSync(workspaceRoot)) {
                     const filesWithProbes = await this.findFilesWithProbes(workspaceRoot);
                     for (const file of filesWithProbes) {
@@ -984,27 +1102,69 @@ export class RooTraceMCPHandler {
               break;
             }
 
-            // ⚠️ КРИТИЧЕСКИ ВАЖНО: НЕ используем showInformationMessage с кнопками, так как это вызывает таймеры
-            // Вместо этого просто возвращаем инструкции для бота, который покажет их в чате
-            // Пользователь должен сам сказать "Logs ready" когда будет готов, без автоматических таймеров
+            // MCP-сервер не имеет доступа к VS Code UI. Поэтому пишем "UI event" в workspace,
+            // а расширение (extension host) ловит изменение файла и показывает popup с кнопками.
             const stepNum = stepNumber || 1;
-            const userMessage = `## 📋 Шаг ${stepNum}: Инструкции по отладке
+            const requestId = `ui_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+            const uiEvent = {
+              type: 'show_user_instructions',
+              requestId,
+              stepNumber: stepNum,
+              instructions,
+              createdAt: new Date().toISOString()
+            };
 
-${instructions}
+            const uiEventPath = getRootraceFilePath('ui.json');
+            const uiResponsePath = getRootraceFilePath('ui-response.json');
+            try {
+              fs.writeFileSync(uiEventPath, JSON.stringify(uiEvent, null, 2), 'utf8');
+            } catch (e) {
+              // Если не удалось записать UI-event, деградируем в текстовый вывод
+              const fallback = `## 📋 Шаг ${stepNum}: Инструкции по отладке\n\n${instructions}\n\n(Не удалось показать popup в VS Code: ${e instanceof Error ? e.message : String(e)})`;
+              result = {
+                content: [{ type: 'text', text: fallback }]
+              };
+              break;
+            }
 
-**Следующие шаги:**
-1. Запустите код и воспроизведите ошибку
-2. Выполните действия, которые вызывают проблему  
-3. После завершения работы кода **напишите в чат "Logs ready"** для анализа собранных логов
-4. Если проблема решена, напишите "Проблема устранена" для очистки сессии
+            // Ждём, пока пользователь нажмёт кнопку в VS Code (через response-файл).
+            // По запросу пользователя увеличиваем ожидание минимум до 2 минут.
+            const maxWaitMs = 2 * 60 * 1000;
+            const pollIntervalMs = 200;
+            const startWait = Date.now();
 
-**⚠️ ВАЖНО:** Нет таймеров и автоматических действий. Вы контролируете процесс. Напишите "Logs ready" когда будете готовы.`;
-            
-            // Возвращаем инструкции для бота - он покажет их в чате БЕЗ кнопок и таймеров
+            let choice: string | null = null;
+            while (Date.now() - startWait < maxWaitMs) {
+              try {
+                if (fs.existsSync(uiResponsePath)) {
+                  const raw = fs.readFileSync(uiResponsePath, 'utf8');
+                  if (raw && raw.trim().length > 0) {
+                    const resp = JSON.parse(raw) as { requestId?: string; choice?: string | null };
+                    if (resp?.requestId === requestId) {
+                      choice = typeof resp.choice === 'string' ? resp.choice : null;
+                      break;
+                    }
+                  }
+                }
+              } catch {
+                // игнорируем временные ошибки чтения/парсинга во время записи
+              }
+              await new Promise(r => setTimeout(r, pollIntervalMs));
+            }
+
             result = {
               content: [{
                 type: 'text',
-                text: userMessage
+                text: JSON.stringify({
+                  success: true,
+                  message: choice
+                    ? 'User selected an option in VS Code popup.'
+                    : 'Timed out waiting for user click in VS Code popup (2 minutes).',
+                  requestId,
+                  choice,
+                  uiEventPath,
+                  uiResponsePath
+                })
               }]
             };
             break;

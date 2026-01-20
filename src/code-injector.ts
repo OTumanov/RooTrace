@@ -85,6 +85,248 @@ interface ProbeInfo {
 // Хранилище для информации о пробах
 const probeRegistry = new Map<string, ProbeInfo>();
 
+// Хранилище для отслеживания файлов, в которые уже вставлена инициализация хоста
+const filesWithHostInit = new Set<string>();
+
+/**
+ * Генерирует код инициализации хоста для Python файлов
+ * Определяет правильный хост для Docker окружения с fallback цепочкой
+ * @returns Код инициализации, который устанавливает _rootrace_host
+ */
+function generatePythonHostInitCode(): string {
+  // Генерируем код, который определяет правильный хост один раз при загрузке модуля
+  // Fallback цепочка:
+  // 1. ROO_TRACE_HOST env var (высший приоритет - пользователь может переопределить)
+  // 2. Проверка Docker (/.dockerenv или /proc/self/cgroup)
+  // 3. Пробуем резолвить host.docker.internal (работает на Mac/Windows/Linux с --add-host)
+  // 4. Если не работает - определяем gateway IP через socket.connect(8.8.8.8)
+  // 5. Если все не работает - localhost (fallback для локального окружения)
+  return `# RooTrace [init] Host detection - устанавливаем _rootrace_host для всех проб
+try:
+    import os, socket
+    _rootrace_host = os.environ.get('ROO_TRACE_HOST')
+    if not _rootrace_host:
+        is_docker = False
+        if os.path.exists('/.dockerenv'):
+            is_docker = True
+        elif os.path.exists('/proc/self/cgroup'):
+            try:
+                with open('/proc/self/cgroup', 'r') as f:
+                    if 'docker' in f.read():
+                        is_docker = True
+            except:
+                pass
+        if is_docker:
+            try:
+                socket.gethostbyname('host.docker.internal')
+                _rootrace_host = 'host.docker.internal'
+            except:
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.connect(('8.8.8.8', 80))
+                    container_ip = s.getsockname()[0]
+                    s.close()
+                    _rootrace_host = '.'.join(container_ip.split('.')[:-1]) + '.1'
+                except:
+                    _rootrace_host = 'localhost'
+        else:
+            _rootrace_host = 'localhost'
+except:
+    _rootrace_host = 'localhost'
+# RooTrace [init]: end
+`;
+}
+
+/**
+ * Извлекает имя пакета из Go файла
+ * @param fileContent - содержимое Go файла
+ * @returns имя пакета или 'main' по умолчанию
+ */
+function extractGoPackageName(fileContent: string): string {
+  const packageMatch = fileContent.match(/^package\s+(\w+)/m);
+  return packageMatch ? packageMatch[1] : 'main';
+}
+
+/**
+ * Проверяет, какие импорты уже есть в Go файле
+ * @param fileContent - содержимое Go файла
+ * @returns объект с информацией о наличии импортов
+ */
+function checkGoImports(fileContent: string): { hasNet: boolean; hasOs: boolean; hasStrings: boolean; hasHttp: boolean; hasBytes: boolean; hasTime: boolean } {
+  return {
+    hasNet: /["']net["']/.test(fileContent),
+    hasOs: /["']os["']/.test(fileContent),
+    hasStrings: /["']strings["']/.test(fileContent),
+    hasHttp: /["']net\/http["']/.test(fileContent),
+    hasBytes: /["']bytes["']/.test(fileContent),
+    hasTime: /["']time["']/.test(fileContent)
+  };
+}
+
+/**
+ * Генерирует код инициализации хоста для Go файлов
+ * Определяет правильный хост для Docker окружения с fallback цепочкой
+ * @param fileContent - содержимое Go файла (для проверки импортов)
+ * @returns Код инициализации, который устанавливает rootraceHost
+ */
+function generateGoHostInitCode(fileContent: string): string {
+  // Проверяем, какие импорты уже есть в файле
+  const imports = checkGoImports(fileContent);
+  
+  // Собираем список недостающих импортов для инициализации
+  const neededImports: string[] = [];
+  if (!imports.hasNet) neededImports.push('"net"');
+  if (!imports.hasOs) neededImports.push('"os"');
+  if (!imports.hasStrings) neededImports.push('"strings"');
+  
+  // Генерируем блок импортов только если нужны новые
+  let importBlock = '';
+  if (neededImports.length > 0) {
+    importBlock = `import (
+    ${neededImports.join('\n    ')}
+)
+
+`;
+  }
+  
+  // Генерируем код, который определяет правильный хост один раз при загрузке пакета
+  // Fallback цепочка аналогична Python
+  return `// RooTrace [init] Host detection - устанавливаем rootraceHost для всех проб
+${importBlock}var rootraceHost = func() string {
+    if host := os.Getenv("ROO_TRACE_HOST"); host != "" {
+        return host
+    }
+    
+    // Проверка Docker
+    isDocker := false
+    if _, err := os.Stat("/.dockerenv"); err == nil {
+        isDocker = true
+    } else if cgroup, err := os.ReadFile("/proc/self/cgroup"); err == nil {
+        isDocker = strings.Contains(string(cgroup), "docker")
+    }
+    
+    if isDocker {
+        // Пробуем резолвить host.docker.internal
+        if _, err := net.LookupHost("host.docker.internal"); err == nil {
+            return "host.docker.internal"
+        }
+        
+        // Определяем gateway IP через dial
+        conn, err := net.Dial("udp", "8.8.8.8:80")
+        if err == nil {
+            localAddr := conn.LocalAddr().(*net.UDPAddr)
+            conn.Close()
+            // Берем первый 3 октета и добавляем .1
+            parts := strings.Split(localAddr.IP.String(), ".")
+            if len(parts) == 4 {
+                return strings.Join(parts[:3], ".") + ".1"
+            }
+        }
+        return "localhost"
+    }
+    
+    return "localhost"
+}()
+// RooTrace [init]: end
+`;
+}
+
+/**
+ * Добавляет недостающие импорты в Go файл, если они нужны для проб
+ * @param fileContent - содержимое Go файла
+ * @returns обновленное содержимое с добавленными импортами
+ */
+function ensureGoProbeImports(fileContent: string): string {
+  const imports = checkGoImports(fileContent);
+  const neededForProbes: string[] = [];
+  
+  // Пробы Go используют: http, bytes, time, strings (strings уже нужен для rootraceHost)
+  if (!imports.hasHttp) neededForProbes.push('"net/http"');
+  if (!imports.hasBytes) neededForProbes.push('"bytes"');
+  if (!imports.hasTime) neededForProbes.push('"time"');
+  // strings уже проверяется в generateGoHostInitCode
+  
+  if (neededForProbes.length === 0) {
+    return fileContent; // Все импорты уже есть
+  }
+  
+  // Находим блок импортов и добавляем недостающие
+  const lines = fileContent.split('\n');
+  let importStart = -1;
+  let importEnd = -1;
+  let inImportBlock = false;
+  let importIndent = '';
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    
+    if (trimmed === 'import (' || trimmed.startsWith('import (')) {
+      importStart = i;
+      inImportBlock = true;
+      importIndent = line.match(/^(\s*)/)?.[1] || '';
+      continue;
+    }
+    
+    if (inImportBlock && trimmed === ')') {
+      importEnd = i;
+      break;
+    }
+    
+    // Однострочный import
+    if (trimmed.startsWith('import ')) {
+      importStart = i;
+      importEnd = i;
+      break;
+    }
+  }
+  
+  // Если есть блок импортов, добавляем недостающие
+  if (importStart >= 0 && importEnd >= importStart) {
+    const newLines = [...lines];
+    if (inImportBlock && importEnd > importStart) {
+      // Многострочный блок - добавляем перед закрывающей скобкой
+      neededForProbes.forEach(imp => {
+        newLines.splice(importEnd, 0, importIndent + '    ' + imp);
+      });
+    } else {
+      // Однострочный или нужно создать блок
+      const importLine = lines[importStart];
+      const importLineTrimmed = importLine.trim();
+      if (importLineTrimmed.includes('import (')) {
+        // Уже есть многострочный блок, но мы не вошли в цикл правильно
+        // Добавляем перед закрывающей скобкой
+        neededForProbes.forEach(imp => {
+          newLines.splice(importEnd + 1, 0, importIndent + '    ' + imp);
+        });
+      } else {
+        // Преобразуем однострочный в многострочный
+        const oldImport = lines[importStart];
+        newLines[importStart] = importIndent + 'import (';
+        newLines.splice(importStart + 1, 0, importIndent + '    ' + oldImport.replace(/^import\s+/, '').replace(/;$/, ','));
+        neededForProbes.forEach((imp, idx) => {
+          newLines.splice(importStart + 2 + idx, 0, importIndent + '    ' + imp);
+        });
+        newLines.splice(importStart + 2 + neededForProbes.length, 0, importIndent + ')');
+      }
+    }
+    return newLines.join('\n');
+  }
+  
+  // Если импортов нет вообще, создаем блок после package
+  const packageMatch = fileContent.match(/^(package\s+\w+)/m);
+  if (packageMatch) {
+    const packageLine = packageMatch[1];
+    const allImports = ['"net"', '"os"', '"strings"', ...neededForProbes].filter((imp, idx, arr) => arr.indexOf(imp) === idx);
+    const importBlock = `import (
+    ${allImports.join('\n    ')}
+)`;
+    return fileContent.replace(packageMatch[0], packageMatch[0] + '\n\n' + importBlock);
+  }
+  
+  return fileContent;
+}
+
 /**
  * Получает таймаут для проверки синтаксиса из конфигурации VS Code
  * @returns Таймаут в миллисекундах (по умолчанию 10000)
@@ -508,13 +750,16 @@ function findWorkspaceRoot(filePath: string): string | null {
     const root = path.parse(searchPath).root;
     
     while (searchPath !== root) {
-      // Проверяем наличие маркерных файлов
+      // Проверяем наличие маркерных файлов (в .rootrace или старые в корне)
+      const rootraceDir = path.join(searchPath, '.rootrace');
+      const hasConfigInRootrace = fs.existsSync(path.join(rootraceDir, 'ai_debug_config'));
+      const hasPortInRootrace = fs.existsSync(path.join(rootraceDir, 'debug_port'));
       const hasConfig = fs.existsSync(path.join(searchPath, '.ai_debug_config'));
       const hasPort = fs.existsSync(path.join(searchPath, '.debug_port'));
       const hasGit = fs.existsSync(path.join(searchPath, '.git'));
       const hasRoo = fs.existsSync(path.join(searchPath, '.roo'));
       
-      if (hasConfig || hasPort || hasGit || hasRoo) {
+      if (hasConfigInRootrace || hasPortInRootrace || hasConfig || hasPort || hasGit || hasRoo) {
         return searchPath;
       }
       
@@ -533,11 +778,17 @@ function findWorkspaceRoot(filePath: string): string | null {
 }
 
 /**
+ * Проверяет, является ли проект Docker-проектом (есть Dockerfile или docker-compose.yml в корне)
+ * @param projectRoot - корень проекта
+ * @returns true если найдены Docker файлы
+ */
+/**
  * Читает URL сервера из .ai_debug_config файла или .debug_port файла
  * Ищет конфиг в рабочей области, начиная от указанного пути или PROJECT_ROOT
+ * ВСЕГДА возвращает localhost - определение Docker окружения происходит во время выполнения через _rootrace_host/rootraceHost
  * @param workspacePath - путь к рабочей области (опционально)
  * @param filePath - путь к файлу, для которого нужен URL (используется для поиска рабочей области)
- * @returns URL сервера или null, если файл не найден
+ * @returns URL сервера (всегда с localhost) или null, если файл не найден
  */
 export function getServerUrl(workspacePath?: string, filePath?: string): string | null {
   try {
@@ -557,8 +808,13 @@ export function getServerUrl(workspacePath?: string, filePath?: string): string 
       basePath = PROJECT_ROOT;
     }
     
-    // Сначала пытаемся прочитать из .ai_debug_config (предпочтительный способ)
-    const configPath = path.join(basePath, '.ai_debug_config');
+    // Сначала пытаемся прочитать из .rootrace/ai_debug_config (предпочтительный способ)
+    const rootraceDir = path.join(basePath, '.rootrace');
+    const configPathInRootrace = path.join(rootraceDir, 'ai_debug_config');
+    const configPathOld = path.join(basePath, '.ai_debug_config'); // Старый путь для обратной совместимости
+    
+    // Пробуем сначала .rootrace, потом старый путь
+    const configPath = fs.existsSync(configPathInRootrace) ? configPathInRootrace : configPathOld;
     
     if (fs.existsSync(configPath)) {
       try {
@@ -580,6 +836,8 @@ export function getServerUrl(workspacePath?: string, filePath?: string): string 
         }
         
         if (config && config.url) {
+          // ВСЕГДА возвращаем URL как есть - определение Docker происходит во время выполнения
+          // через _rootrace_host (Python) или rootraceHost (Go)
           return config.url;
         }
       } catch (error) {
@@ -587,13 +845,17 @@ export function getServerUrl(workspacePath?: string, filePath?: string): string 
       }
     }
     
-    // Fallback 1: пытаемся прочитать порт из .debug_port файла
-    const portFilePath = path.join(basePath, '.debug_port');
+    // Fallback 1: пытаемся прочитать порт из .rootrace/debug_port или .debug_port (старый путь)
+    const portFilePathInRootrace = path.join(rootraceDir, 'debug_port');
+    const portFilePathOld = path.join(basePath, '.debug_port');
+    const portFilePath = fs.existsSync(portFilePathInRootrace) ? portFilePathInRootrace : portFilePathOld;
     if (fs.existsSync(portFilePath)) {
       try {
         const portContent = fs.readFileSync(portFilePath, 'utf8').trim();
         const port = parseInt(portContent, 10);
         if (!isNaN(port) && port > 0 && port < 65536) {
+          // ВСЕГДА используем localhost - определение Docker происходит во время выполнения
+          // через _rootrace_host (Python) или rootraceHost (Go)
           return `http://localhost:${port}/`;
         }
       } catch (error) {
@@ -601,9 +863,10 @@ export function getServerUrl(workspacePath?: string, filePath?: string): string 
       }
     }
     
-    // Fallback 2: используем стандартный порт (51234) - не нужно читать файл
-    // Это ускоряет работу, так как не нужно ждать чтения конфига
-    return 'http://localhost:51234/';
+    // Fallback 2: используем стандартный порт (51234)
+    // ВСЕГДА используем localhost - определение Docker происходит во время выполнения
+    // через _rootrace_host (Python) или rootraceHost (Go)
+    return `http://localhost:51234/`;
   } catch (error) {
     return null;
   }
@@ -685,8 +948,116 @@ export async function injectProbe(
     // Используем улучшенный механизм блокировок с очередью операций
     return await withFileLock(safeFilePath, async () => {
       // Читаем содержимое файла
-      const fileContent = await fs.promises.readFile(safeFilePath, 'utf8');
-      const lines = fileContent.split('\n');
+      let fileContent = await fs.promises.readFile(safeFilePath, 'utf8');
+      let lines = fileContent.split('\n');
+      
+      // Проверяем, есть ли уже инициализация хоста (для Python и Go)
+      const fileExtension = filePath.split('.').pop()?.toLowerCase() || '';
+      const language = getLanguageFromFileExtension(fileExtension);
+      const isPython = language === 'python' || language === 'py';
+      const isGo = language === 'go';
+      
+      if ((isPython || isGo) && !filesWithHostInit.has(safeFilePath)) {
+        if (isPython) {
+          // Проверяем, есть ли уже переменная _rootrace_host или инициализация
+          const hasHostInit = fileContent.includes('_rootrace_host') && fileContent.includes('RooTrace [init]');
+          
+          if (!hasHostInit) {
+            // Вставляем инициализацию хоста в начало файла (после импортов или в самом начале)
+            const initCode = generatePythonHostInitCode();
+            
+            // Ищем место для вставки: после импортов или в начало файла
+            let insertLineIndex = 0;
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i].trim();
+              // Пропускаем комментарии в начале файла и пустые строки
+              if (line.startsWith('#') || line === '') {
+                continue;
+              }
+              // Если нашли не-комментарий и не-пустую строку - это начало кода
+              insertLineIndex = i;
+              break;
+            }
+            
+            // Вставляем инициализацию
+            lines.splice(insertLineIndex, 0, ...initCode.split('\n'));
+            fileContent = lines.join('\n');
+            filesWithHostInit.add(safeFilePath);
+          } else {
+            // Инициализация уже есть
+            filesWithHostInit.add(safeFilePath);
+          }
+        } else if (isGo) {
+          // Проверяем, есть ли уже переменная rootraceHost или инициализация
+          const hasHostInit = fileContent.includes('rootraceHost') && fileContent.includes('RooTrace [init]');
+          
+          if (!hasHostInit) {
+            // Убеждаемся что все нужные импорты есть для проб (http, bytes, time)
+            fileContent = ensureGoProbeImports(fileContent);
+            lines = fileContent.split('\n');
+            
+            // Генерируем код инициализации
+            const initCode = generateGoHostInitCode(fileContent);
+            
+            // Ищем место для вставки: после package declaration и импортов, перед первым кодом
+            let insertLineIndex = 0;
+            let foundPackage = false;
+            let foundImports = false;
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i].trim();
+              if (line.startsWith('package ')) {
+                foundPackage = true;
+                continue;
+              }
+              if (foundPackage && (line.startsWith('import ') || line === 'import (')) {
+                foundImports = true;
+                // Пропускаем блок импортов
+                if (line === 'import (' || line.startsWith('import (')) {
+                  let j = i + 1;
+                  while (j < lines.length && !lines[j].trim().startsWith(')')) {
+                    j++;
+                  }
+                  if (j < lines.length) {
+                    i = j;
+                    continue;
+                  }
+                }
+                continue;
+              }
+              // После package и импортов ищем первый код (не комментарий, не пустая строка)
+              if (foundPackage && (foundImports || !line.startsWith('import'))) {
+                if (line !== '' && !line.startsWith('//') && !line.startsWith('/*')) {
+                  insertLineIndex = i;
+                  break;
+                }
+              }
+            }
+            
+            // Если package не найден, вставляем в начало
+            if (!foundPackage) {
+              insertLineIndex = 0;
+            } else if (insertLineIndex === 0 && foundPackage) {
+              // Если не нашли место после импортов, вставляем после package
+              for (let i = 0; i < lines.length; i++) {
+                if (lines[i].trim().startsWith('package ')) {
+                  insertLineIndex = i + 1;
+                  break;
+                }
+              }
+            }
+            
+            // Вставляем инициализацию
+            lines.splice(insertLineIndex, 0, ...initCode.split('\n'));
+            fileContent = lines.join('\n');
+            filesWithHostInit.add(safeFilePath);
+          } else {
+            // Инициализация уже есть, но нужно проверить импорты для проб
+            fileContent = ensureGoProbeImports(fileContent);
+            lines = fileContent.split('\n');
+            filesWithHostInit.add(safeFilePath);
+          }
+        }
+      }
       
       // Проверяем, что номер строки допустим (проверка после получения lock, но перед основной логикой)
       if (lineNumber < 1 || lineNumber > lines.length) {
@@ -696,9 +1067,7 @@ export async function injectProbe(
         };
       }
 
-      // Получаем расширение файла для определения языка
-      const fileExtension = filePath.split('.').pop()?.toLowerCase() || '';
-      const language = getLanguageFromFileExtension(fileExtension);
+      // Язык уже определен выше (для Python инициализации)
       
       // Генерируем короткий уникальный ID для этой пробы (формат: a1b2)
       const probeId = Math.random().toString(36).substring(2, 6);
@@ -727,6 +1096,16 @@ export async function injectProbe(
         
         // Логируем URL для диагностики (видно в MCP сервере)
         console.error(`[RooTrace] Generating probe code: language=${language}, serverUrl=${serverUrl}, hypothesisId=${hypothesisId || 'auto'}, message=${message.substring(0, 50)}...`);
+        
+        // КРИТИЧЕСКИ ВАЖНО: Если URL не найден, это критическая ошибка
+        if (!serverUrl) {
+          console.error(`[RooTrace] CRITICAL: Server URL not found! File: ${safeFilePath}, PROJECT_ROOT: ${PROJECT_ROOT}`);
+          // Проверяем, существует ли .rootrace директория
+          const rootraceDir = path.join(PROJECT_ROOT, '.rootrace');
+          const configPath = path.join(rootraceDir, 'ai_debug_config');
+          const portPath = path.join(rootraceDir, 'debug_port');
+          console.error(`[RooTrace] Checking config paths: .rootrace exists=${fs.existsSync(rootraceDir)}, config exists=${fs.existsSync(configPath)}, port exists=${fs.existsSync(portPath)}`);
+        }
         
         const generatedCode = generateProbeCode(language, probeType, message, serverUrl, hypothesisId);
         
@@ -1211,9 +1590,14 @@ export function generateProbeCode(
       // КРИТИЧЕСКИ ВАЖНО: timeout=5.0 для тяжелых операций (IFC, многопоточность, CPU-intensive)
       // ДОБАВЛЕНО: улучшенное логирование с URL и traceback для ошибок
       // ДОБАВЛЕНО: параллельное логирование в файл И в консоль (stderr) для видимости
+      // ДОБАВЛЕНО: поддержка Docker - определение хоста происходит во время выполнения через _rootrace_host
       // Экранируем URL для использования в строке Python
       const escapedUrl = url.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-      return `try: import urllib.request, json, os, traceback, sys; log_file = os.path.expanduser('~/.roo_probe_debug.log'); server_url = '${escapedUrl}'; log_msg = f"Probe EXECUTING: {hId} - {escapedMessage}, URL: {server_url}\\n"; open(log_file, 'a').write(log_msg); sys.stderr.write(f"[RooTrace Probe] {log_msg}"); req = urllib.request.Request(server_url, data=json.dumps({'hypothesisId': '${hId}', 'message': '${escapedMessage}', 'state': {}}).encode('utf-8'), headers={'Content-Type': 'application/json'}); resp = urllib.request.urlopen(req, timeout=5.0); success_msg = f"Probe SUCCESS: {hId} - status={resp.getcode()}, URL={server_url}\\n"; open(log_file, 'a').write(success_msg); sys.stderr.write(f"[RooTrace Probe] {success_msg}"); except Exception as e: log_file = os.path.expanduser('~/.roo_probe_debug.log'); error_msg = f"Probe ERROR: {hId} - {type(e).__name__}: {str(e)}, URL: {server_url}\\n{traceback.format_exc()}\\n"; open(log_file, 'a').write(error_msg); sys.stderr.write(f"[RooTrace Probe ERROR] {error_msg}"); pass`;
+      // Генерируем код для отправки данных на сервер
+      // Используем переменную _rootrace_host, которая должна быть инициализирована в начале файла
+      // Переменная _rootrace_host определяется ВО ВРЕМЯ ВЫПОЛНЕНИЯ внутри Docker контейнера
+      // Если переменная не инициализирована (старые пробы), используем URL напрямую как fallback
+      return `try: import urllib.request, json, os, traceback, sys; log_file = os.path.expanduser('~/.roo_probe_debug.log'); base_url = '${escapedUrl}'; server_url = base_url.replace('localhost', _rootrace_host) if '_rootrace_host' in globals() and 'localhost' in base_url else base_url; log_msg = f"Probe EXECUTING: {hId} - {escapedMessage}, URL: {server_url}\\n"; open(log_file, 'a').write(log_msg); sys.stderr.write(f"[RooTrace Probe] {log_msg}"); req = urllib.request.Request(server_url, data=json.dumps({'hypothesisId': '${hId}', 'message': '${escapedMessage}', 'state': {}}).encode('utf-8'), headers={'Content-Type': 'application/json'}); resp = urllib.request.urlopen(req, timeout=5.0); success_msg = f"Probe SUCCESS: {hId} - status={resp.getcode()}, URL={server_url}\\n"; open(log_file, 'a').write(success_msg); sys.stderr.write(f"[RooTrace Probe] {success_msg}"); except Exception as e: log_file = os.path.expanduser('~/.roo_probe_debug.log'); error_msg = f"Probe ERROR: {hId} - {type(e).__name__}: {str(e)}, URL: {server_url if 'server_url' in locals() else base_url}\\n{traceback.format_exc()}\\n"; open(log_file, 'a').write(error_msg); sys.stderr.write(f"[RooTrace Probe ERROR] {error_msg}"); pass`;
       
     case 'java':
       return `try {
@@ -1242,12 +1626,22 @@ export function generateProbeCode(
       return `std::system(("curl -s -X POST -H \\"Content-Type: application/json\\" -d '{\\"hypothesisId\\":\\"${hId}\\",\\"message\\":\\"${escapedMessage}\\",\\"state\\":{}}' '" + std::string("${url}") + "' > /dev/null 2>&1 &").c_str());`;
       
     case 'go':
+      // Для Go используем переменную rootraceHost, которая должна быть инициализирована в начале файла
+      // Если переменная не инициализирована (старые пробы), используем URL напрямую как fallback
+      const escapedUrlGo = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      // Заменяем localhost на rootraceHost если переменная существует
+      // ВАЖНО: Проба должна использовать импорты http, bytes, json, strings, time которые уже могут быть в файле
+      // или будут добавлены при инициализации rootraceHost
       return `go func() {
     defer func() { recover() }()
+    serverURL := "${escapedUrlGo}"
+    if rootraceHost != "" && strings.Contains(serverURL, "localhost") {
+        serverURL = strings.Replace(serverURL, "localhost", rootraceHost, 1)
+    }
     jsonData := []byte(\`{"hypothesisId":"${hId}","message":"${escapedMessage}","state":{}}\`)
-    req, _ := http.NewRequest("POST", "${url}", bytes.NewBuffer(jsonData))
+    req, _ := http.NewRequest("POST", serverURL, bytes.NewBuffer(jsonData))
     req.Header.Set("Content-Type", "application/json")
-    client := &http.Client{Timeout: time.Millisecond * 100}
+    client := &http.Client{Timeout: 100 * time.Millisecond}
     client.Do(req)
 }()`;
       
@@ -1478,7 +1872,19 @@ export async function removeAllProbesFromFile(filePath: string): Promise<Injecti
       }
       
       // Удаляем все блоки проб
-      const cleanedContent = content.replace(probeRegex, '');
+      let cleanedContent = content.replace(probeRegex, '');
+      
+      // Удаляем инициализацию хоста для Python и Go
+      const fileExtension = path.extname(filePath).toLowerCase();
+      if (fileExtension === '.py' || fileExtension === '.pyw' || fileExtension === '.pyi') {
+        const hostInitRegex = /#\s*RooTrace\s*\[init\].*?[\s\S]*?#\s*RooTrace\s*\[init\]:\s*end/g;
+        cleanedContent = cleanedContent.replace(hostInitRegex, '');
+        filesWithHostInit.delete(safeFilePath);
+      } else if (fileExtension === '.go') {
+        const hostInitRegex = /\/\/\s*RooTrace\s*\[init\].*?[\s\S]*?\/\/\s*RooTrace\s*\[init\]:\s*end/g;
+        cleanedContent = cleanedContent.replace(hostInitRegex, '');
+        filesWithHostInit.delete(safeFilePath);
+      }
       
       // Убираем лишние пустые строки (более 2 подряд заменяем на 2)
       const finalContent = cleanedContent.replace(/\n\s*\n\s*\n+/g, '\n\n');

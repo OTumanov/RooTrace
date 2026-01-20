@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import { SharedLogStorage, RuntimeLog, Hypothesis } from './shared-log-storage';
 import { encryptObject, decryptObject, getEncryptionKey } from './encryption-utils';
 import { withFileLock } from './file-lock-utils';
+import { getRootraceFilePath } from './rootrace-dir-utils';
 
 export interface SessionMetadata {
   id: string;
@@ -38,12 +39,7 @@ export class SessionManager {
   private readonly sessionsFilePath: string;
 
   private constructor() {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (workspaceFolders && workspaceFolders.length > 0) {
-      this.sessionsFilePath = path.join(workspaceFolders[0].uri.fsPath, '.roo-trace-sessions.json');
-    } else {
-      this.sessionsFilePath = path.join('.', '.roo-trace-sessions.json');
-    }
+    this.sessionsFilePath = getRootraceFilePath('sessions.json');
     // Load sessions asynchronously
     this.loadSessions();
   }

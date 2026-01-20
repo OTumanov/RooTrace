@@ -6,6 +6,7 @@ import { PerformanceMetrics, HealthStatus } from './types';
 import { SharedLogStorage } from './shared-log-storage';
 import * as fs from 'fs';
 import * as path from 'path';
+import { getRootraceFilePath } from './rootrace-dir-utils';
 
 // Условный импорт vscode
 let vscode: typeof import('vscode') | undefined;
@@ -95,14 +96,8 @@ export class MetricsCollector {
     // Проверяем существование файла логов
     let fileExists = false;
     try {
-      const workspaceFolders = vscode?.workspace.workspaceFolders;
-      if (workspaceFolders && workspaceFolders.length > 0) {
-        const logFilePath = path.join(workspaceFolders[0].uri.fsPath, '.ai_debug_logs.json');
-        fileExists = fs.existsSync(logFilePath);
-      } else {
-        const logFilePath = path.join(process.cwd(), '.ai_debug_logs.json');
-        fileExists = fs.existsSync(logFilePath);
-      }
+      const logFilePath = getRootraceFilePath('ai_debug_logs.json');
+      fileExists = fs.existsSync(logFilePath);
     } catch (e) {
       // Игнорируем ошибки
     }
