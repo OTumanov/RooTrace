@@ -725,6 +725,9 @@ export async function injectProbe(
         // Используем путь к файлу для поиска рабочей области
         const serverUrl = getServerUrl(undefined, safeFilePath);
         
+        // Логируем URL для диагностики (видно в MCP сервере)
+        console.error(`[RooTrace] Generating probe code: language=${language}, serverUrl=${serverUrl}, hypothesisId=${hypothesisId || 'auto'}, message=${message.substring(0, 50)}...`);
+        
         const generatedCode = generateProbeCode(language, probeType, message, serverUrl, hypothesisId);
         
         if (!generatedCode) {
@@ -1199,14 +1202,18 @@ export function generateProbeCode(
     case 'typescript':
     case 'js':
     case 'ts':
-      return `try { fetch('${url}', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hypothesisId: '${hId}', message: '${escapedMessage}', state: {} }) }).catch(() => {}); } catch(e) {}`;
+      // Добавляем логирование в консоль для JavaScript/TypeScript
+      return `try { console.error('[RooTrace Probe] EXECUTING: ${hId} - ${escapedMessage}, URL: ${url}'); fetch('${url}', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hypothesisId: '${hId}', message: '${escapedMessage}', state: {} }) }).then(res => { console.error('[RooTrace Probe] SUCCESS: ${hId} - status=' + res.status + ', URL: ${url}'); }).catch(err => { console.error('[RooTrace Probe ERROR] ${hId} - ' + err.name + ': ' + err.message + ', URL: ${url}'); }); } catch(e) { console.error('[RooTrace Probe ERROR] ${hId} - ' + e.name + ': ' + e.message + ', URL: ${url}'); }`;
       
     case 'python':
     case 'py':
       // Для Python используем urllib (встроенная библиотека) - однострочный вариант
       // КРИТИЧЕСКИ ВАЖНО: timeout=5.0 для тяжелых операций (IFC, многопоточность, CPU-intensive)
-      // ДОБАВЛЕНО: логирование ВСЕХ попыток в файл для диагностики (даже успешных)
-      return `try: import urllib.request, json, os; log_file = os.path.expanduser('~/.roo_probe_debug.log'); open(log_file, 'a').write(f"Probe EXECUTING: {hId} - {escapedMessage}\\n"); req = urllib.request.Request('${url}', data=json.dumps({'hypothesisId': '${hId}', 'message': '${escapedMessage}', 'state': {}}).encode('utf-8'), headers={'Content-Type': 'application/json'}); resp = urllib.request.urlopen(req, timeout=5.0); open(log_file, 'a').write(f"Probe SUCCESS: {hId} - status={resp.getcode()}\\n"); except Exception as e: log_file = os.path.expanduser('~/.roo_probe_debug.log'); open(log_file, 'a').write(f"Probe ERROR: {hId} - {type(e).__name__}: {str(e)}\\n"); pass`;
+      // ДОБАВЛЕНО: улучшенное логирование с URL и traceback для ошибок
+      // ДОБАВЛЕНО: параллельное логирование в файл И в консоль (stderr) для видимости
+      // Экранируем URL для использования в строке Python
+      const escapedUrl = url.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      return `try: import urllib.request, json, os, traceback, sys; log_file = os.path.expanduser('~/.roo_probe_debug.log'); server_url = '${escapedUrl}'; log_msg = f"Probe EXECUTING: {hId} - {escapedMessage}, URL: {server_url}\\n"; open(log_file, 'a').write(log_msg); sys.stderr.write(f"[RooTrace Probe] {log_msg}"); req = urllib.request.Request(server_url, data=json.dumps({'hypothesisId': '${hId}', 'message': '${escapedMessage}', 'state': {}}).encode('utf-8'), headers={'Content-Type': 'application/json'}); resp = urllib.request.urlopen(req, timeout=5.0); success_msg = f"Probe SUCCESS: {hId} - status={resp.getcode()}, URL={server_url}\\n"; open(log_file, 'a').write(success_msg); sys.stderr.write(f"[RooTrace Probe] {success_msg}"); except Exception as e: log_file = os.path.expanduser('~/.roo_probe_debug.log'); error_msg = f"Probe ERROR: {hId} - {type(e).__name__}: {str(e)}, URL: {server_url}\\n{traceback.format_exc()}\\n"; open(log_file, 'a').write(error_msg); sys.stderr.write(f"[RooTrace Probe ERROR] {error_msg}"); pass`;
       
     case 'java':
       return `try {
