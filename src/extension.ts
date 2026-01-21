@@ -1800,8 +1800,30 @@ async function startServer() {
                     }
                     
                     // Send success response
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ status: 'success', message: 'Data received' }));
+                    // Special handling for SMOKE_TEST: return identifiable response
+                    if (data.hypothesisId === 'SMOKE_TEST' || (data.message && data.message.includes('SMOKE_TEST'))) {
+                        // Return identifiable response for smoke test verification
+                        const smokeTestResponse = {
+                            status: 'success',
+                            message: 'SMOKE_TEST_VERIFIED',
+                            received: true,
+                            hypothesisId: data.hypothesisId || 'SMOKE_TEST',
+                            timestamp: new Date().toISOString(),
+                            serverInfo: {
+                                port: port || 'unknown',
+                                host: 'localhost',
+                                rooTraceVersion: '1.0.0'
+                            }
+                        };
+                        res.writeHead(200, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify(smokeTestResponse));
+                        outputChannel.appendLine(`[HTTP SERVER] SMOKE_TEST verified - returned identifiable response`);
+                        console.log(`[HTTP SERVER] SMOKE_TEST verified - returned identifiable response`);
+                    } else {
+                        // Regular log response
+                        res.writeHead(200, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ status: 'success', message: 'Data received' }));
+                    }
                     metricsCollector.recordRequest(Date.now() - startTime);
                 } catch (error) {
                     handleError(error, 'Extension.startServer', { endpoint: '/', action: 'parseJSON' });
