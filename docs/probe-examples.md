@@ -2,6 +2,18 @@
 
 ⚠️ **ВАЖНО:** Эти примеры показывают, как выглядят пробы после генерации. Для Python файлов **ЗАПРЕЩЕНО** использовать `inject_probes` или `inject_multiple_probes`. Вместо этого используйте `apply_diff` (Block Rewrite) для замены функций/блоков целиком.
 
+## Правила гигиены кода
+
+Все пробы следуют строгим правилам гигиены кода:
+
+1. **The 5-Line Rule**: Проба не должна превышать 5-7 строк
+2. **Метрики количества**: Включайте `len(array)` и флаг `is_empty` для массивов/списков
+3. **Оптимизация импортов**: Не дублируйте `json` если он уже импортирован в файле
+4. **Асинхронность**: Не блокируйте основной поток (Go: `go func()`, Python: `timeout=5.0`)
+5. **Zero-Dependency**: Используйте только стандартные библиотеки или то, что уже есть в файле
+6. **Metadata Abstraction**: Метаданные в `state`, а не в `message`
+7. **Session Binding**: Включайте `sessionId` в `state` и в имена временных файлов
+
 ## Поддержка Docker
 
 RooTrace автоматически определяет Docker окружение и настраивает пробы для работы как внутри контейнеров, так и на обычных машинах.
@@ -227,6 +239,7 @@ try:
     state_data = {
         'large_list': large_list[:100],  # Первые 100 элементов
         'total_count': len(large_list),
+        'is_empty': len(large_list) == 0,  # Флаг пустоты для UI
         'summary': {'min': min_value, 'max': max_value, 'avg': avg_value}
     }
     conn = http.client.HTTPConnection("localhost", 51234)
@@ -239,11 +252,52 @@ except:
 # RooTrace [id: 7g1h]: end
 ```
 
+## Пример 11: Оптимизированная проба (если `json` уже импортирован)
+```python
+# Если в начале файла уже есть: import json
+# RooTrace [id: 8a1b] H1: оптимизированная проба
+try:
+    import http.client, socket  # json уже импортирован, не дублируем
+    conn = http.client.HTTPConnection("localhost", 51234)
+    conn.sock = socket.create_connection(("localhost", 51234), timeout=5.0)
+    conn.request("POST", "/", json.dumps({'hypothesisId': 'H1', 'message': 'optimized', 'state': {'items_count': len(items), 'is_empty': len(items) == 0}}), {'Content-Type': 'application/json'})
+    conn.getresponse()
+    conn.close()
+except:
+    pass
+# RooTrace [id: 8a1b]: end
+```
+**Почему это важно:** Если `json` уже импортирован в файле, не нужно импортировать его локально. Это делает пробу лаконичнее (2-3 строки импортов вместо 5).
+
+## Пример 12: С метриками количества и проверкой на пустоту (РЕКОМЕНДУЕТСЯ)
+```python
+# RooTrace [id: 9c2d] H2: обработка списка с полными метриками
+try:
+    import http.client, json, socket, os
+    state_data = {
+        'input_count': len(input_items) if input_items else 0,
+        'output_count': len(output_items) if output_items else 0,
+        'is_empty': input_items is None or len(input_items) == 0,  # Флаг пустоты для UI
+        'has_nil': None in input_items if isinstance(input_items, list) else False,  # Проверка на nil
+        'processed': count,
+        'sessionId': os.environ.get('ROO_TRACE_SESSION_ID')  # Привязка к сессии
+    }
+    conn = http.client.HTTPConnection("localhost", 51234)
+    conn.sock = socket.create_connection(("localhost", 51234), timeout=5.0)
+    conn.request("POST", "/", json.dumps({'hypothesisId': 'H2', 'message': 'processing', 'state': state_data}), {'Content-Type': 'application/json'})
+    conn.getresponse()
+    conn.close()
+except:
+    pass
+# RooTrace [id: 9c2d]: end
+```
+**Почему это важно:** Метрики количества (`len()`) помогают отследить потерю данных. Флаг `is_empty` сразу бросается в глаза в UI сервера. Проверка `has_nil` помогает найти проблемы с `None/null`. `sessionId` позволяет разделить логи разных запусков.
+
 ---
 
 ## Примеры для Go
 
-### Пример 11: Базовая проба для Go
+### Пример 13: Базовая проба для Go
 ```go
 // RooTrace [id: g1a2] H1: проверка значения переменной
 go func() {
@@ -261,7 +315,7 @@ go func() {
 // RooTrace [id: g1a2]: end
 ```
 
-### Пример 12: Проба с данными состояния
+### Пример 14: Проба с данными состояния
 ```go
 // RooTrace [id: g2b3] H2: передача данных состояния
 go func() {
@@ -284,7 +338,7 @@ go func() {
 // RooTrace [id: g2b3]: end
 ```
 
-### Пример 13: Проба в начале и конце функции
+### Пример 15: Проба в начале и конце функции
 ```go
 func processUser(userID string) {
     // RooTrace [id: g3c4] H3: начало обработки пользователя
@@ -358,6 +412,16 @@ func processUser(userID string) {
     - Добавляет необходимые импорты (`net/http`, `bytes`, `time`, `strings`)
     - Вставляет инициализацию `rootraceHost` в начало файла при первой инъекции
     - Использует `rootraceHost` в пробах для правильного определения хоста
+
+12. **The 5-Line Rule:** Пробы не должны превышать 5-7 строк. Если нужно логировать много данных — используйте `state` с метриками (`len(array)` вместо всего массива)
+
+13. **Метрики количества:** Всегда включайте `len(array)` и флаг `is_empty` для массивов/списков. Это критично для быстрой диагностики в UI
+
+14. **Оптимизация импортов:** Если `json` уже импортирован в файле, не импортируйте его локально в пробе. Это делает пробу лаконичнее (2-3 строки вместо 5)
+
+15. **Session Binding:** Включайте `sessionId` в `state` и в имена временных файлов для разделения логов разных запусков
+
+16. **Проверка на пустоту:** Всегда включайте флаг `is_empty` в дополнение к `len()`. Это критично для быстрой диагностики в UI — пустой массив должен быть виден сразу
 
 ## Генерация проб
 

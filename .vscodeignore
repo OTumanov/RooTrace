@@ -1,0 +1,71 @@
+# Dependencies - НУЖНЫ в VSIX! VS Code НЕ устанавливает зависимости автоматически
+# node_modules/ - НЕ исключаем полностью! Но можно оптимизировать, исключив ненужные файлы
+# Исключаем только ненужные файлы внутри node_modules (тесты, документация, source maps)
+node_modules/**/*.test.js
+node_modules/**/*.test.ts
+node_modules/**/*.spec.js
+node_modules/**/*.spec.ts
+node_modules/**/test/
+node_modules/**/tests/
+node_modules/**/__tests__/
+node_modules/**/*.map
+node_modules/**/README.md
+node_modules/**/CHANGELOG.md
+node_modules/**/LICENSE
+node_modules/**/LICENSE.*
+node_modules/**/*.md
+!node_modules/**/package.json
+
+# Tests - не нужны в продакшн пакете
+tests/
+**/*.test.ts
+**/*.test.js
+jest.config.js
+
+# Development files
+.git/
+.gitignore
+.vscode/
+*.log
+.DS_Store
+coverage/
+.env
+build/
+*.tsbuildinfo
+
+# Build artifacts (но out/ нужен - это скомпилированный код!)
+*.vsix
+
+# Generated files (генерируются автоматически при работе расширения)
+.roomodes
+.roo-trace-sessions.json
+.roo/
+
+# Serena files (не нужны для работы расширения)
+.serena/
+
+# Documentation (не нужна в VSIX пакете)
+docs/
+
+# Scripts (не нужны в продакшн)
+scripts/
+build-extension.sh
+fix-probes.py
+
+# Source TypeScript files (нужен только скомпилированный out/)
+src/**/*.ts
+!src/**/*.d.ts
+tsconfig.json
+
+# Source maps - не нужны в продакшн пакете (нужны только для отладки)
+out/**/*.map
+
+# Prompts - НУЖНЫ для работы расширения (role-manager загружает их из prompts/)
+# prompts/ - НЕ исключаем!
+
+# README нужен для пользователей
+# README.md - НЕ исключаем!
+
+# Other markdown files (кроме README)
+*.md
+!README.md

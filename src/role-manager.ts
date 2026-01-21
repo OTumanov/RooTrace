@@ -10,8 +10,12 @@ export class RoleManager {
     
     private static async loadCustomInstructions(version: string): Promise<string> {
         try {
-            // Путь к новому файлу с инструкциями
-            const instructionsPath = path.join(__dirname, '..', 'prompts', 'ai-debugger-prompt.md');
+            // Try English version first (preferred for token economy and better instruction following)
+            const englishPath = path.join(__dirname, '..', 'prompts', 'ai-debugger-prompt.en.md');
+            const russianPath = path.join(__dirname, '..', 'prompts', 'ai-debugger-prompt.md');
+            
+            // Prefer English version if exists, fallback to Russian for backward compatibility
+            const instructionsPath = fs.existsSync(englishPath) ? englishPath : russianPath;
             
             if (fs.existsSync(instructionsPath)) {
                 let content = fs.readFileSync(instructionsPath, 'utf8');
@@ -245,12 +249,12 @@ export class RoleManager {
             }
 
             // Записываем файл атомарно
-            // ВАЖНО: Этот файл автогенерируется из prompts/ai-debugger-prompt.md
-            // НЕ РЕДАКТИРУЙТЕ .roomodes вручную! Все изменения делайте в ai-debugger-prompt.md
+            // ВАЖНО: Этот файл автогенерируется из prompts/ai-debugger-prompt.en.md (или prompts/ai-debugger-prompt.md как fallback)
+            // НЕ РЕДАКТИРУЙТЕ .roomodes вручную! Все изменения делайте в ai-debugger-prompt.en.md (или ai-debugger-prompt.md)
             const yamlContent = yaml.dump(config, { indent: 2 });
             const headerComment = `# ⚠️ АВТОГЕНЕРИРУЕМЫЙ ФАЙЛ - НЕ РЕДАКТИРУЙТЕ ВРУЧНУЮ!
-# Этот файл создается автоматически из prompts/ai-debugger-prompt.md
-# Все изменения делайте в ai-debugger-prompt.md, затем перезапустите расширение
+# Этот файл создается автоматически из prompts/ai-debugger-prompt.en.md (или prompts/ai-debugger-prompt.md как fallback)
+# Все изменения делайте в ai-debugger-prompt.en.md (или ai-debugger-prompt.md), затем перезапустите расширение
 
 `;
             fs.writeFileSync(roomodesPath, headerComment + yamlContent, 'utf8');

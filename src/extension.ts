@@ -378,29 +378,38 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // Автоматически обновляем .roomodes при изменении prompts/ai-debugger-prompt.md
+    // Автоматически обновляем .roomodes при изменении prompts/ai-debugger-prompt.en.md или prompts/ai-debugger-prompt.md
     const folders = vscode.workspace.workspaceFolders;
     if (folders) {
         for (const folder of folders) {
-            const promptFilePath = path.join(folder.uri.fsPath, 'prompts', 'ai-debugger-prompt.md');
-            if (fs.existsSync(promptFilePath)) {
-                fs.watchFile(promptFilePath, { interval: 1000 }, async (curr, prev) => {
-                    if (curr.mtime > prev.mtime) {
-                        outputChannel.appendLine('[RooTrace] Detected change in ai-debugger-prompt.md, updating .roomodes...');
-                        try {
-                            await RoleManager.syncRoleWithRoo(context);
-                            outputChannel.appendLine('[RooTrace] .roomodes updated successfully');
-                        } catch (error) {
-                            outputChannel.appendLine(`[RooTrace] ERROR: Failed to update .roomodes: ${error}`);
+            // Watch both English (preferred) and Russian (fallback) versions
+            const englishPromptPath = path.join(folder.uri.fsPath, 'prompts', 'ai-debugger-prompt.en.md');
+            const russianPromptPath = path.join(folder.uri.fsPath, 'prompts', 'ai-debugger-prompt.md');
+            
+            const watchFile = (filePath: string, fileName: string) => {
+                if (fs.existsSync(filePath)) {
+                    fs.watchFile(filePath, { interval: 1000 }, async (curr, prev) => {
+                        if (curr.mtime > prev.mtime) {
+                            outputChannel.appendLine(`[RooTrace] Detected change in ${fileName}, updating .roomodes...`);
+                            try {
+                                await RoleManager.syncRoleWithRoo(context);
+                                outputChannel.appendLine('[RooTrace] .roomodes updated successfully');
+                            } catch (error) {
+                                outputChannel.appendLine(`[RooTrace] ERROR: Failed to update .roomodes: ${error}`);
+                            }
                         }
-                    }
-                });
-                context.subscriptions.push({
-                    dispose: () => {
-                        fs.unwatchFile(promptFilePath);
-                    }
-                });
-            }
+                    });
+                    context.subscriptions.push({
+                        dispose: () => {
+                            fs.unwatchFile(filePath);
+                        }
+                    });
+                }
+            };
+            
+            // Watch both English (preferred) and Russian (fallback) versions
+            watchFile(englishPromptPath, 'ai-debugger-prompt.en.md');
+            watchFile(russianPromptPath, 'ai-debugger-prompt.md');
         }
     }
 
@@ -640,7 +649,14 @@ async function logToOutputChannel(hypothesisId: string, context: string, data: L
             handleError(error, 'Extension.logToOutputChannel.dashboard', { hypothesisId });
         }
     } else {
-        // Auto-open dashboard when first log arrives
+        // НЕ открываем дашборд автоматически для тестовых логов (из get_debug_status)
+        const isTestLog = typeof context === 'string' && context.startsWith('Server test:');
+        if (isTestLog) {
+            outputChannel.appendLine(`[DEBUG] Skipping auto-open dashboard for test log: ${hypothesisId}`);
+            return; // Не открываем дашборд для тестовых логов
+        }
+        
+        // Auto-open dashboard when first log arrives (только для реальных логов отладки)
         // Wait a bit to ensure log is saved to storage before opening dashboard
         await new Promise(resolve => setTimeout(resolve, 100));
         outputChannel.appendLine(`[DEBUG] Opening dashboard automatically for log: ${hypothesisId}`);
