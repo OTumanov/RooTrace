@@ -749,6 +749,52 @@ const modules = [
   - ЗАПРЕЩЕНО: Принимать REASON с общими фразами ("possible issue", "might be wrong")
   - ЗАПРЕЩЕНО: Продолжать работу если формат неверный или REASON недостаточно подробный
   
+  **ЧЕК-ЛИСТ ВАЛИДАЦИИ REASON:**
+  
+  1. **Наличие обратных кавычек (code blocks):**
+     - ✅ Цитата кода должна быть оформлена как code block: \`\`\`language\nкод\n\`\`\` или \`код\`
+     - ✅ Цитата лога должна быть оформлена как code block или в кавычках
+     - ❌ ЗАПРЕЩЕНО: Принимать REASON без обратных кавычек в цитатах
+     - ❌ ЗАПРЕЩЕНО: Принимать REASON где код/лог описан словами без цитаты
+     - **Проверка:** REASON должен содержать минимум один code block (\`\`\` или \`) или строку в кавычках
+  
+  2. **Соответствие логам (если в описании проблемы есть лог ошибки):**
+     - ✅ Если в описании проблемы упомянут лог ошибки (например, "IndexError: list index out of range" или "Timeout after 5 seconds")
+     - ✅ RooTrace должен проверить, есть ли в REASON вхождение ключевых слов из этого лога
+     - ✅ Ключевые слова: название ошибки (IndexError, Timeout, AttributeError и т.д.), ключевые фразы из сообщения
+     - ❌ ЗАПРЕЩЕНО: Принимать REASON если в описании проблемы есть лог, но в REASON нет упоминания ключевых слов из этого лога
+     - **Проверка:** Извлечь ключевые слова из лога ошибки (если есть) → проверить их наличие в REASON
+  
+  **Примеры валидации:**
+  
+  ❌ **НЕПРОХОДИТ ВАЛИДАЦИЮ:**
+  REASON: "Possible memory leak in function"
+  - Нет code block
+  - Нет цитаты кода/лога
+  
+  ❌ **НЕПРОХОДИТ ВАЛИДАЦИЮ (если в описании проблемы есть лог):**
+  Описание: "Application crashes with IndexError: list index out of range"
+  REASON: "Function accesses array without bounds check"
+  - Нет упоминания "IndexError" или "list index out of range"
+  
+  ✅ **ПРОХОДИТ ВАЛИДАЦИЮ:**
+  REASON: "Function creates global dict \`_cache = {}\` with \`id(obj)\` as key (lines 45-47):
+  \`\`\`python
+  _cache = {}
+  _cache[id(model)] = data
+  \`\`\`
+  No cleanup mechanism visible. User reported memory growth after 100+ operations."
+  - Есть code block
+  - Есть цитата кода
+  - Есть объяснение
+  
+  ✅ **ПРОХОДИТ ВАЛИДАЦИЮ (с соответствием логу):**
+  Описание: "Application crashes with IndexError: list index out of range"
+  REASON: "Line 123: \`result = items[index]\` without bounds check. Log shows: 'IndexError: list index out of range' at this line. User crash report matches this location."
+  - Есть code block (\`result = items[index]\`)
+  - Есть упоминание "IndexError: list index out of range" из лога
+  - Есть объяснение связи
+  
   **ВАЛИДАЦИЯ SUMMARY ОТ КОДЕРА (Phase 1.2, 7.4):**
   - ОБЯЗАТЕЛЬНО: Список вставленных проб (H1: file:line)
   - ОБЯЗАТЕЛЬНО: Результаты диагностики (OK/ERRORS/WARNINGS)
