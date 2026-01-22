@@ -13,6 +13,7 @@ import { metricsCollector } from './metrics';
 import { SERVER_CONFIG, RATE_LIMIT_CONFIG } from './constants';
 import { LogData } from './types';
 import { getRootraceFilePath, ensureRootraceInGitignore } from './rootrace-dir-utils';
+import { getDiagnosticsForMCP } from './diagnostics-handler';
 
 // Интерфейсы для типизации
 interface WebSocketClient {
@@ -1846,6 +1847,28 @@ async function startServer() {
                 res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ status: 'error', message: 'Failed to get logs' }));
             });
+        } else if (req.method === 'GET' && req.url?.startsWith('/diagnostics')) {
+            // Diagnostics endpoint - returns VS Code diagnostics
+            try {
+                // Parse query parameters
+                const url = new URL(req.url, `http://${req.headers.host}`);
+                const filePath = url.searchParams.get('file');
+                
+                const diagnostics = getDiagnosticsForMCP(filePath || undefined);
+                
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    status: 'success',
+                    diagnostics: diagnostics,
+                    count: diagnostics.length
+                }));
+                metricsCollector.recordRequest(Date.now() - startTime);
+            } catch (error) {
+                handleError(error, 'Extension.startServer', { endpoint: '/diagnostics' });
+                metricsCollector.recordError();
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ status: 'error', message: 'Failed to get diagnostics' }));
+            }
         } else {
             // Send 404 for other routes
             res.writeHead(404, { 'Content-Type': 'application/json' });

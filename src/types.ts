@@ -101,3 +101,18 @@ export interface HealthStatus {
     running: boolean;
   };
 }
+
+/**
+ * Диагностика из VS Code Problems panel
+ */
+export interface DiagnosticInfo {
+  file: string;
+  severity: 0 | 1 | 2 | 3; // Error, Warning, Information, Hint
+  message: string;
+  source?: string;
+  code?: string | number;
+  range: {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+  };
+}

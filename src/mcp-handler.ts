@@ -342,6 +342,19 @@ export class RooTraceMCPHandler {
           },
           required: ['instructions']
         }
+      },
+      {
+        name: 'mcp--roo-trace--get_problems',
+        description: 'Получает диагностики (ошибки и предупреждения) из VS Code Problems panel. Используйте этот инструмент для автоматического обнаружения и исправления ошибок в коде. Можно указать конкретный файл или получить все диагностики workspace.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            filePath: {
+              type: 'string',
+              description: 'Опциональный путь к файлу. Если не указан, возвращаются все диагностики workspace.',
+            }
+          }
+        }
       }
     ];
 
@@ -1167,6 +1180,104 @@ export class RooTraceMCPHandler {
                 })
               }]
             };
+            break;
+          }
+
+          case 'mcp--roo-trace--get_problems': {
+            const { filePath } = args as { filePath?: string };
+            
+            try {
+              // Получаем URL сервера extension
+              const serverUrl = getServerUrl();
+              if (!serverUrl) {
+                result = {
+                  content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                      success: false,
+                      error: 'Server URL not found. Extension server may not be running.',
+                      errorCode: 'SERVER_NOT_FOUND'
+                    })
+                  }],
+                  isError: true
+                };
+                break;
+              }
+
+              // Формируем URL для запроса диагностик
+              const url = new URL(serverUrl);
+              url.pathname = '/diagnostics';
+              if (filePath) {
+                url.searchParams.set('file', filePath);
+              }
+
+              // Выполняем HTTP GET запрос
+              const diagnostics = await new Promise<any>((resolve, reject) => {
+                const options: http.RequestOptions = {
+                  hostname: url.hostname,
+                  port: url.port || 51234,
+                  path: url.pathname + url.search,
+                  method: 'GET',
+                  timeout: 5000
+                };
+
+                const req = http.request(options, (res) => {
+                  let responseData = '';
+
+                  res.on('data', (chunk) => {
+                    responseData += chunk.toString();
+                  });
+
+                  res.on('end', () => {
+                    try {
+                      if (res.statusCode !== 200) {
+                        reject(new Error(`Server returned status ${res.statusCode}: ${responseData}`));
+                        return;
+                      }
+                      const parsed = JSON.parse(responseData);
+                      resolve(parsed);
+                    } catch (error) {
+                      reject(new Error(`Failed to parse response: ${error}`));
+                    }
+                  });
+                });
+
+                req.on('error', (error) => {
+                  reject(error);
+                });
+
+                req.on('timeout', () => {
+                  req.destroy();
+                  reject(new Error('Request timeout'));
+                });
+
+                req.end();
+              });
+
+              result = {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    success: true,
+                    diagnostics: diagnostics.diagnostics || [],
+                    count: diagnostics.count || 0,
+                    filePath: filePath || 'all files'
+                  })
+                }]
+              };
+            } catch (error) {
+              result = {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    success: false,
+                    error: error instanceof Error ? error.message : String(error),
+                    errorCode: 'DIAGNOSTICS_FETCH_FAILED'
+                  })
+                }],
+                isError: true
+              };
+            }
             break;
           }
 
