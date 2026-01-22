@@ -37,7 +37,7 @@
 - ✅ Обновить `src/mcp-handler.ts` - добавить tool (добавлен `mcp--roo-trace--get_problems`)
 - ✅ Обновить `src/extension.ts` - добавлен HTTP endpoint `/diagnostics`
 - ✅ Обновить `src/types.ts` - добавлен интерфейс `DiagnosticInfo`
-- ⏳ Обновить `prompts/ai-debugger-prompt.en.md` - добавить использование (TODO)
+- ✅ Обновить `prompts/ai-debugger-prompt.en.md` - добавить использование (ВЫПОЛНЕНО)
 
 ---
 
