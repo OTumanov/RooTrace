@@ -1,8 +1,10 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import * as yaml from 'js-yaml';
 import { RulesLoader, LoadedRule } from './rules-loader';
+import { ReasoningEnhancer, ReasoningConfig } from './reasoning-enhancer';
 
 export class RoleManager {
     private static readonly ROLE_SLUG = "ai-debugger";
@@ -11,40 +13,159 @@ export class RoleManager {
     
     private static async loadCustomInstructions(version: string, workspacePath?: string): Promise<string> {
         try {
-            // Try English version first (preferred for token economy and better instruction following)
-            const englishPath = path.join(__dirname, '..', 'prompts', 'ai-debugger-prompt.en.md');
-            const russianPath = path.join(__dirname, '..', 'prompts', 'ai-debugger-prompt.md');
-            
-            // Prefer English version if exists, fallback to Russian for backward compatibility
-            const instructionsPath = fs.existsSync(englishPath) ? englishPath : russianPath;
-            
-            let content = '';
-            if (fs.existsSync(instructionsPath)) {
-                content = fs.readFileSync(instructionsPath, 'utf8');
-                
-                // Заменяем плейсхолдер версии, если он есть в файле
-                content = content.replace(/\$\{extensionVersion\}/g, version);
-            }
-            
-            // Загружаем правила из .roo/rules/ (если workspacePath указан)
+            // МИНИМАЛЬНЫЙ БАЗОВЫЙ ПРОМПТ - используем lazy loading модулей
+            // Вместо большого промпта загружаем только базовые модули и ссылки на остальные
+            let content = `# ⚡ AI DEBUGGER: MODULAR MODE (v${version})
+
+## 🧩 LAZY LOADING SYSTEM
+
+**КРИТИЧЕСКИ ВАЖНО:** Ты работаешь в модульной системе. Основные инструкции разбиты на модули в \`.roo/rules-ai-debugger/\`.
+
+**Базовые модули загружены ниже. Для остальных используй \`mcp--roo-trace--load_rule\`:**
+
+- **Phase 0 (Input Filter):** \`roo-00-input-filter.md\`
+- **Phase 0.1 (TODO List):** \`roo-01-todo-list.md\`
+- **Phase 0.2 (Delegation):** \`roo-02-delegate-recon.md\`
+- **Phase 0.3 (Receive Architect):** \`roo-03-receive-architect.md\`
+- **Phase 2 (Network Discovery):** \`roo-06-network.md\`
+- **Phase 4 (Pre-Flight):** \`roo-04-preflight.md\`
+- **Phase 5 (Hypotheses):** \`roo-05-hypotheses.md\`
+- **Phase 6 (Read Logs):** \`roo-09-read-logs.md\`
+- **Phase 7 (Cycle Management):** \`roo-10-cycle-manage.md\`
+- **Phase 8 (Cleanup):** \`roo-11-cleanup.md\`
+
+**Для кодера (при делегировании):** \`code-00-role.md\`, \`code-01-probe-insertion.md\`, и т.д.
+**Для архитектора (при делегировании):** \`arch-00-role.md\`, \`arch-01-reconnaissance.md\`, и т.д.
+
+**🛡️ SAFETY FIRST:** Если тебе не хватает знаний для текущей фазы, используй:
+\`mcp--roo-trace--load_rule(rulePath="roo-XX-phase-name.md")\`
+
+---
+
+`;
+
+            // Загружаем только базовые модули (eager loading)
             if (workspacePath) {
                 try {
-                    // Определяем режим загрузки (eager по умолчанию, можно сделать настраиваемым)
-                    const loadingMode: 'eager' | 'lazy' = 'eager';
+                    // Загружаем только критичные базовые модули
+                    const baseModules = [
+                        '00-base-language.md',
+                        '00-base-output.md',
+                        '00-base-error-handling.md',
+                        'roo-00-role.md',
+                        '00-formats-validator.md' // Валидация форматов
+                    ];
                     
-                    // Загружаем правила для mode-specific и generic
-                    const rules = await RulesLoader.loadRules({
-                        loadingMode: loadingMode,
-                        modeSlug: this.ROLE_SLUG,
-                        workspacePath: workspacePath
-                    });
-                    
-                    if (rules.length > 0) {
-                        const rulesContent = RulesLoader.formatRulesForPrompt(rules);
-                        if (rulesContent) {
-                            // Добавляем правила к основным инструкциям
-                            content += '\n\n====\nUSER\'S CUSTOM INSTRUCTIONS\n\nRules:\n\n' + rulesContent + '\n====\n';
+                    // Загружаем базовые модули напрямую из файлов
+                    const rulesDir = path.join(workspacePath, '.roo', 'rules-ai-debugger');
+                    for (const moduleName of baseModules) {
+                        try {
+                            const modulePath = path.join(rulesDir, moduleName);
+                            if (fs.existsSync(modulePath)) {
+                                const moduleContent = fs.readFileSync(modulePath, 'utf8');
+                                if (moduleContent) {
+                                    content += `\n\n## === # ${moduleName} ===\n${moduleContent}\n`;
+                                }
+                            }
+                        } catch (moduleError) {
+                            console.warn(`[RooTrace] Failed to load base module ${moduleName}: ${moduleError}`);
                         }
+                    }
+                    
+                    // Добавляем информацию о доступных модулях (lazy loading)
+                    content += `\n\n## 📚 AVAILABLE MODULES (Load on demand)
+
+Use \`mcp--roo-trace--load_rule(rulePath="module-name.md")\` to load specific modules:
+
+**RooTrace Modules:**
+- \`roo-00-input-filter.md\` - Input validation
+- \`roo-01-todo-list.md\` - TODO list management
+- \`roo-02-delegate-recon.md\` - Delegation to Architect
+- \`roo-03-receive-architect.md\` - Receiving Architect summary
+- \`roo-04-preflight.md\` - Pre-flight checks
+- \`roo-05-hypotheses.md\` - Hypothesis formulation
+- \`roo-06-network.md\` - Network discovery (Docker, ports)
+- \`roo-07-smoke-test.md\` - Smoke testing
+- \`roo-08-wait.md\` - Wait protocols
+- \`roo-09-read-logs.md\` - Log reading
+- \`roo-10-cycle-manage.md\` - Cycle management
+- \`roo-11-cleanup.md\` - Cleanup procedures
+- \`roo-12-manual-prohibition.md\` - Manual operation prohibitions
+- \`roo-13-constraints.md\` - System constraints
+
+**Coder Modules (for delegation):**
+- \`code-00-role.md\` - Coder role definition
+- \`code-01-probe-insertion.md\` - Probe insertion rules
+- \`code-02-code-fix.md\` - Code fixing rules
+- \`code-03-linter-protocol.md\` - Linter integration
+- \`code-04-block-rewrite.md\` - Block rewriting
+- \`code-05-probe-examples.md\` - Probe examples
+- \`code-06-probe-spec.md\` - Probe specifications
+- \`code-07-code-hygiene.md\` - Code hygiene
+- \`code-08-python-indent.md\` - Python indentation
+- \`code-09-safety.md\` - Safety rules
+- \`code-10-rollback.md\` - Rollback procedures
+- \`code-11-prohibitions.md\` - Prohibitions
+- \`code-12-meta-cognitive.md\` - Meta-cognitive checks
+- \`code-13-fallback.md\` - Fallback behavior
+
+**Architect Modules (for delegation):**
+- \`arch-00-role.md\` - Architect role definition
+- \`arch-01-reconnaissance.md\` - Reconnaissance protocol
+- \`arch-02-log-analysis.md\` - Log analysis
+- \`arch-03-format-recon.md\` - Format reconnaissance
+- \`arch-04-format-fix.md\` - Format fixing
+
+**Base Modules:**
+- \`00-base-language.md\` - Language protocol (already loaded)
+- \`00-base-output.md\` - Output rules (already loaded)
+- \`00-base-error-handling.md\` - Error handling (already loaded)
+- \`00-base-penalties.md\` - Penalty system
+- \`00-formats-validator.md\` - Format validation (already loaded)
+
+`;
+
+                    // Загружаем техники улучшения рассуждений
+                    try {
+                        const reasoningConfig = await this.loadReasoningConfig(workspacePath);
+                        const reasoningPrompt = ReasoningEnhancer.generateReasoningPrompt(reasoningConfig);
+                        if (reasoningPrompt) {
+                            content += `\n\n${reasoningPrompt}\n\n`;
+                        }
+                    } catch (reasoningError) {
+                        console.warn(`[RooTrace] Error loading reasoning techniques: ${reasoningError}`);
+                        // Используем дефолтную конфигурацию (только "Oh!" Hack)
+                        const defaultReasoningPrompt = ReasoningEnhancer.generateReasoningPrompt({
+                            enabled: true,
+                            techniques: { ohHack: true, societyOfThought: false, conflictOfPerspectives: false, expertiseDiversity: false }
+                        });
+                        if (defaultReasoningPrompt) {
+                            content += `\n\n${defaultReasoningPrompt}\n\n`;
+                        }
+                    }
+
+                    // Загружаем пользовательские правила из .roo/rules/ (если есть)
+                    try {
+                        const userRules = await RulesLoader.loadRules({
+                            loadingMode: 'lazy', // Пользовательские правила тоже lazy
+                            modeSlug: this.ROLE_SLUG,
+                            workspacePath: workspacePath
+                        });
+                        
+                        // Фильтруем только пользовательские правила (не из rules-ai-debugger)
+                        const customRules = userRules.filter(rule => 
+                            !rule.path.includes('rules-ai-debugger') &&
+                            !rule.path.includes('reasoning-techniques.md') // Исключаем reasoning-techniques.md, он уже обработан
+                        );
+                        
+                        if (customRules.length > 0) {
+                            const customRulesContent = RulesLoader.formatRulesForPrompt(customRules);
+                            if (customRulesContent) {
+                                content += `\n\n====\nUSER'S CUSTOM INSTRUCTIONS\n\nRules:\n\n${customRulesContent}\n====\n`;
+                            }
+                        }
+                    } catch (customRulesError) {
+                        console.warn(`[RooTrace] Error loading custom rules: ${customRulesError}`);
                     }
                 } catch (rulesError) {
                     console.warn(`[RooTrace] Error loading rules: ${rulesError}`);
@@ -52,103 +173,90 @@ export class RoleManager {
                 }
             }
             
-            if (content) {
-                return content;
-            } else {
-                // Если файла нет, возвращаем стандартные инструкции
-                return `
-### 🛡️ ROO-TRACE PROTOCOL v${version}
-
-#### PHASE 1: HYPOTHESIS & STATUS
-- Сначала вызови 'get_debug_status'.
-- Сформулируй 3-5 гипотез (H1, H2...) в XML-тегах <HYPOTHESES>.
-- Проверь текущую память бота (ProfileID, Meds, Context) согласно '07-bot-memory-fix-plan'.
-
-#### PHASE 2: SAFE INSTRUMENTATION
-- Используй 'inject_probes' для сбора данных.
-- **ВНИМАНИЕ:** ЗАПРЕЩЕНО вставлять код внутрь JS-объектов, тернарных операторов или цепочек вызовов. Вставляй строго ПЕРЕД или ПОСЛЕ логических блоков.
-- Используй 'update_todo_list' для ADHD-контроля каждого шага.
-
-#### PHASE 3: ANALYSIS & VERDICT
-- Собери логи через 'read_runtime_logs'.
-- Сравни полученные данные с гипотезами.
-- ТОЛЬКО если данные подтвердили H(x), предлагай правку кода через 'edit_file'.
-
-#### PHASE 4: CLEANUP
-- После исправления ОБЯЗАТЕЛЬНО удали все пробы через 'clear_session' или ручной откат.
-
-### 🛡️ ROO-TRACE SURGICAL PROTOCOL (v2.0)
-
-#### 1. ПРАВИЛА БЕЗОПАСНЫХ ИНЪЕКЦИЙ (No Syntax Errors)
-- **Контекстная проверка:** Перед вставкой \`console.log\` (пробы), убедись, что ты не разрываешь синтаксическую структуру.
-- **ЗАПРЕЩЕНО:** Вставлять код внутрь JS-объектов \{...\}, тернарных операторов \`? :\`, цепочек вызовов \`.then()\` или аргументов функций.
-- **МАРКИРОВКА:** Каждая вставленная строка ОБЯЗАНА содержать маркер \`// @DEBUG\`.
-  *Пример:* \`console.log('[RooTrace]: Data:', data); // @DEBUG\`
-
-#### 2. СБОР И ВАЛИДАЦИЯ ДАННЫХ
-- Если после запуска приложения \`read_runtime_logs\` возвращает пустоту — это СИГНАЛ БЕДЫ.
-- Не пытайся гадать! Либо исправь способ доставки логов (проверь порты/сервер), либо признай, что не видишь рантайм, и не делай выводов на пустом месте.
-
-#### 3. ОБЯЗАТЕЛЬНАЯ УБОРКА (Cleanup Phase)
-- **Rule of Thumb:** Твой финальный ответ пользователю НЕ ДОПУСТИМ, пока в коде остается хотя бы одна строка с маркером \`// @DEBUG\` или префиксом \`[RooTrace]\`.
-- **Протокол завершения:**
-  1. Подтвердил гипотезу логами.
-  2. Сформулировал исправление.
-  3. ВЫПОЛНИЛ ОЧИСТКУ: удали все свои пробы через \`edit_file\` или \`clear_session\`.
-  4. Только после подтверждения чистоты кода (read_file) применяй финальный фикс и отвечай пользователю.
-
-#### 4. ADHD-КОНТРОЛЬ
-- Используй \`update_todo_list\`. Добавь пункт "🧹 Cleanup & Final Fix" в каждый план. Никогда не отмечай задачу выполненной, если в коде остался мусор.
-`.trim();
-            }
+            return content;
         } catch (error) {
             console.error(`Error loading custom instructions: ${error}`);
-            // Возвращаем стандартные инструкции в случае ошибки
-            return `
-### 🛡️ ROO-TRACE PROTOCOL v${version}
+            // Возвращаем минимальный базовый промпт в случае ошибки
+            return `# ⚡ AI DEBUGGER: MODULAR MODE (v${version})
 
-#### PHASE 1: HYPOTHESIS & STATUS
-- Сначала вызови 'get_debug_status'.
-- Сформулируй 3-5 гипотез (H1, H2...) в XML-тегах <HYPOTHESES>.
-- Проверь текущую память бота (ProfileID, Meds, Context) согласно '07-bot-memory-fix-plan'.
+## 🧩 LAZY LOADING SYSTEM
 
-#### PHASE 2: SAFE INSTRUMENTATION
-- Используй 'inject_probes' для сбора данных.
-- **ВНИМАНИЕ:** ЗАПРЕЩЕНО вставлять код внутрь JS-объектов, тернарных операторов или цепочек вызовов. Вставляй строго ПЕРЕД или ПОСЛЕ логических блоков.
-- Используй 'update_todo_list' для ADHD-контроля каждого шага.
+**КРИТИЧЕСКИ ВАЖНО:** Ты работаешь в модульной системе. Используй \`mcp--roo-trace--load_rule\` для загрузки модулей из \`.roo/rules-ai-debugger/\`.
 
-#### PHASE 3: ANALYSIS & VERDICT
-- Собери логи через 'read_runtime_logs'.
-- Сравни полученные данные с гипотезами.
-- ТОЛЬКО если данные подтвердили H(x), предлагай правку кода через 'edit_file'.
-
-#### PHASE 4: CLEANUP
-- После исправления ОБЯЗАТЕЛЬНО удали все пробы через 'clear_session' или ручной откат.
-
-### 🛡️ ROO-TRACE SURGICAL PROTOCOL (v2.0)
-
-#### 1. ПРАВИЛА БЕЗОПАСНЫХ ИНЪЕКЦИЙ (No Syntax Errors)
-- **Контекстная проверка:** Перед вставкой \`console.log\` (пробы), убедись, что ты не разрываешь синтаксическую структуру.
-- **ЗАПРЕЩЕНО:** Вставлять код внутрь JS-объектов \{...\}, тернарных операторов \`? :\`, цепочек вызовов \`.then()\` или аргументов функций.
-- **МАРКИРОВКА:** Каждая вставленная строка ОБЯЗАНА содержать маркер \`// @DEBUG\`.
-  *Пример:* \`console.log('[RooTrace]: Data:', data); // @DEBUG\`
-
-#### 2. СБОР И ВАЛИДАЦИЯ ДАННЫХ
-- Если после запуска приложения \`read_runtime_logs\` возвращает пустоту — это СИГНАЛ БЕДЫ.
-- Не пытайся гадать! Либо исправь способ доставки логов (проверь порты/сервер), либо признай, что не видишь рантайм, и не делай выводов на пустом месте.
-
-#### 3. ОБЯЗАТЕЛЬНАЯ УБОРКА (Cleanup Phase)
-- **Rule of Thumb:** Твой финальный ответ пользователю НЕ ДОПУСТИМ, пока в коде остается хотя бы одна строка с маркером \`// @DEBUG\` или префиксом \`[RooTrace]\`.
-- **Протокол завершения:**
-  1. Подтвердил гипотезу логами.
-  2. Сформулировал исправление.
-  3. ВЫПОЛНИЛ ОЧИСТКУ: удали все свои пробы через \`edit_file\` или \`clear_session\`.
-  4. Только после подтверждения чистоты кода (read_file) применяй финальный фикс и отвечай пользователю.
-
-#### 4. ADHD-КОНТРОЛЬ
-- Используй \`update_todo_list\`. Добавь пункт "🧹 Cleanup & Final Fix" в каждый план. Никогда не отмечай задачу выполненной, если в коде остался мусор.
-`.trim();
+**🛡️ SAFETY FIRST:** Если тебе не хватает знаний для текущей фазы, используй:
+\`mcp--roo-trace--load_rule(rulePath="roo-XX-phase-name.md")\`
+`;
         }
+    }
+
+    /**
+     * Загружает конфигурацию техник улучшения рассуждений из .roo/rules/reasoning-techniques.md
+     */
+    private static async loadReasoningConfig(workspacePath: string): Promise<Partial<ReasoningConfig>> {
+        const possiblePaths = [
+            path.join(workspacePath, '.roo', 'rules', 'reasoning-techniques.md'),
+            path.join(workspacePath, '.roo', 'rules-ai-debugger', 'reasoning-techniques.md'),
+            path.join(os.homedir(), '.roo', 'rules', 'reasoning-techniques.md')
+        ];
+
+        for (const configPath of possiblePaths) {
+            if (fs.existsSync(configPath)) {
+                try {
+                    const content = fs.readFileSync(configPath, 'utf8');
+                    
+                    // Парсим YAML frontmatter, если есть
+                    const yamlMatch = content.match(/^---\n([\s\S]*?)\n---\n/);
+                    if (yamlMatch) {
+                        const yamlContent = yamlMatch[1];
+                        const parsed = yaml.load(yamlContent) as any;
+                        
+                        if (parsed.reasoning) {
+                            return {
+                                enabled: parsed.reasoning.enabled !== false,
+                                techniques: {
+                                    ohHack: parsed.reasoning.techniques?.ohHack !== false,
+                                    societyOfThought: parsed.reasoning.techniques?.societyOfThought === true,
+                                    conflictOfPerspectives: parsed.reasoning.techniques?.conflictOfPerspectives === true,
+                                    expertiseDiversity: parsed.reasoning.techniques?.expertiseDiversity === true
+                                },
+                                autoActivate: parsed.reasoning.autoActivate !== false,
+                                complexityThreshold: parsed.reasoning.complexityThreshold || 70
+                            };
+                        }
+                    }
+                    
+                    // Если нет YAML frontmatter, проверяем наличие техник в тексте
+                    const config: Partial<ReasoningConfig> = {
+                        enabled: true,
+                        techniques: {
+                            ohHack: true, // По умолчанию включена
+                            societyOfThought: /societyOfThought.*true/i.test(content),
+                            conflictOfPerspectives: /conflictOfPerspectives.*true/i.test(content),
+                            expertiseDiversity: /expertiseDiversity.*true/i.test(content)
+                        },
+                        autoActivate: !/autoActivate.*false/i.test(content),
+                        complexityThreshold: 70
+                    };
+                    
+                    return config;
+                } catch (error) {
+                    console.warn(`[RooTrace] Error parsing reasoning config from ${configPath}: ${error}`);
+                }
+            }
+        }
+
+        // Дефолтная конфигурация (только "Oh!" Hack)
+        return {
+            enabled: true,
+            techniques: {
+                ohHack: true,
+                societyOfThought: false,
+                conflictOfPerspectives: false,
+                expertiseDiversity: false
+            },
+            autoActivate: true,
+            complexityThreshold: 70
+        };
     }
 
     static async syncRoleWithRoo(context: vscode.ExtensionContext) {
@@ -181,6 +289,13 @@ export class RoleManager {
         // Roo Code читает .roomodes из корня workspace
         const roomodesPath = path.join(workspacePath, '.roomodes');
         const extensionVersion = context.extension.packageJSON.version;
+        
+        // КРИТИЧЕСКИ ВАЖНО: Если .roomodes уже существует - УДАЛЯЕМ ЕГО!
+        // Мы всегда создаем файл заново с нашей конфигурацией
+        if (fs.existsSync(roomodesPath)) {
+            console.log(`[RooTrace] .roomodes exists, deleting it before creating new one`);
+            fs.unlinkSync(roomodesPath);
+        }
         
         const myRole = {
             slug: this.ROLE_SLUG,
@@ -279,12 +394,14 @@ export class RoleManager {
             }
 
             // Записываем файл атомарно
-            // ВАЖНО: Этот файл автогенерируется из prompts/ai-debugger-prompt.en.md (или prompts/ai-debugger-prompt.md как fallback)
-            // НЕ РЕДАКТИРУЙТЕ .roomodes вручную! Все изменения делайте в ai-debugger-prompt.en.md (или ai-debugger-prompt.md)
+            // ВАЖНО: Этот файл автогенерируется расширением RooTrace
+            // НЕ РЕДАКТИРУЙТЕ .roomodes вручную! Все инструкции загружаются через модульную систему lazy loading
+            // Модули находятся в .roo/rules-ai-debugger/ и загружаются по требованию через mcp--roo-trace--load_rule
             const yamlContent = yaml.dump(config, { indent: 2 });
             const headerComment = `# ⚠️ АВТОГЕНЕРИРУЕМЫЙ ФАЙЛ - НЕ РЕДАКТИРУЙТЕ ВРУЧНУЮ!
-# Этот файл создается автоматически из prompts/ai-debugger-prompt.en.md (или prompts/ai-debugger-prompt.md как fallback)
-# Все изменения делайте в ai-debugger-prompt.en.md (или ai-debugger-prompt.md), затем перезапустите расширение
+# Этот файл создается автоматически расширением RooTrace
+# Все инструкции загружаются через модульную систему lazy loading из .roo/rules-ai-debugger/
+# Модули загружаются по требованию через mcp--roo-trace--load_rule
 
 `;
             fs.writeFileSync(roomodesPath, headerComment + yamlContent, 'utf8');

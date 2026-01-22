@@ -65,6 +65,82 @@ function getAutoDebugApprovalFilePath(): string {
     return getRootraceFilePath('allow-auto-debug.json');
 }
 
+/**
+ * Копирует модули промптов из ресурсов расширения в рабочую область
+ * Копирует только если файлы еще не существуют (не перезаписывает пользовательские изменения)
+ */
+async function copyPromptModules(context: vscode.ExtensionContext): Promise<void> {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+        return; // Нет рабочей области
+    }
+
+    const extensionPath = context.extensionPath;
+    // Пробуем несколько возможных путей к модулям в расширении
+    const possibleSourceDirs = [
+        path.join(extensionPath, '.roo', 'rules-ai-debugger'),
+        path.join(extensionPath, 'extension', '.roo', 'rules-ai-debugger'), // Для упакованного расширения
+        path.join(__dirname, '..', '.roo', 'rules-ai-debugger') // Для разработки
+    ];
+    
+    let sourceDir: string | null = null;
+    for (const dir of possibleSourceDirs) {
+        if (fs.existsSync(dir)) {
+            sourceDir = dir;
+            outputChannel.appendLine(`[RooTrace] Found prompt modules at: ${dir}`);
+            break;
+        }
+    }
+    
+    // Проверяем, существует ли директория с модулями в расширении
+    if (!sourceDir) {
+        outputChannel.appendLine(`[RooTrace] Warning: Prompt modules directory not found. Tried: ${possibleSourceDirs.join(', ')}`);
+        return;
+    }
+
+    // Копируем для каждой рабочей области
+    for (const folder of workspaceFolders) {
+        const workspacePath = folder.uri.fsPath;
+        const targetDir = path.join(workspacePath, '.roo', 'rules-ai-debugger');
+
+        try {
+            // Создаем целевую директорию, если её нет
+            if (!fs.existsSync(targetDir)) {
+                fs.mkdirSync(targetDir, { recursive: true });
+                outputChannel.appendLine(`[RooTrace] Created directory: ${targetDir}`);
+            }
+
+            // Читаем все файлы из исходной директории
+            const sourceFiles = fs.readdirSync(sourceDir, { withFileTypes: true });
+            let copiedCount = 0;
+            let skippedCount = 0;
+
+            for (const file of sourceFiles) {
+                if (file.isFile() && file.name.endsWith('.md')) {
+                    const sourcePath = path.join(sourceDir, file.name);
+                    const targetPath = path.join(targetDir, file.name);
+
+                    // Копируем только если файл еще не существует
+                    if (!fs.existsSync(targetPath)) {
+                        fs.copyFileSync(sourcePath, targetPath);
+                        copiedCount++;
+                        outputChannel.appendLine(`[RooTrace] Copied: ${file.name}`);
+                    } else {
+                        skippedCount++;
+                        outputChannel.appendLine(`[RooTrace] Skipped (exists): ${file.name}`);
+                    }
+                }
+            }
+
+            outputChannel.appendLine(`[RooTrace] Prompt modules: ${copiedCount} copied, ${skippedCount} skipped for workspace: ${workspacePath}`);
+        } catch (error) {
+            const errorMsg = `Failed to copy prompt modules to ${targetDir}: ${error}`;
+            outputChannel.appendLine(`[RooTrace] ERROR: ${errorMsg}`);
+            throw new Error(errorMsg);
+        }
+    }
+}
+
 // Function to append log entries to the persistent file
 async function appendLogToFile(hypothesisId: string, context: string, data: LogData) {
     try {
@@ -358,6 +434,16 @@ export async function activate(context: vscode.ExtensionContext) {
         outputChannel.appendLine(`[RooTrace] Session created: ${sessionId}`);
     } catch (error) {
         outputChannel.appendLine(`[RooTrace] ERROR: Failed to create session: ${error}`);
+    }
+    
+    // Копируем модули промптов в рабочую область (если их еще нет)
+    try {
+        outputChannel.appendLine('[RooTrace] Copying prompt modules to workspace...');
+        await copyPromptModules(context);
+        outputChannel.appendLine('[RooTrace] Prompt modules copy completed');
+    } catch (error) {
+        outputChannel.appendLine(`[RooTrace] ERROR: Failed to copy prompt modules: ${error}`);
+        handleError(error, 'Extension.activate', { action: 'copyPromptModules' });
     }
     
     // Синхронизируем роль с Roo Code

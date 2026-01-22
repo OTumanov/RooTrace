@@ -17,17 +17,23 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { getRootraceFilePath } from './rootrace-dir-utils';
 import { RulesLoader } from './rules-loader';
+import { ContextMonitor } from './context-monitor';
+import { MessageQueue } from './message-queue';
 
 const execAsync = promisify(exec);
 
 // Используем shared log storage вместо изолированного debugSession
 const sharedStorage = SharedLogStorage.getInstance();
 
+// Мониторинг контекста для защиты от отравления
+const contextMonitor = ContextMonitor.getInstance();
+
 // Основной класс для обработки MCP-запросов
 export class RooTraceMCPHandler {
   private server: Server | null = null;
   private startTime: number = Date.now();
   private committedFiles: Set<string> = new Set(); // Трекер файлов, для которых был сделан коммит
+  private messageQueue = MessageQueue.getInstance(); // Очередь сообщений для обработки queued запросов
   private static readonly READ_LOGS_APPROVAL_FILE = 'allow-read-runtime-logs.json';
   private static readonly READ_LOGS_APPROVAL_MAX_AGE_MS = 2 * 60 * 1000; // 2 minutes
   private static readonly AUTO_DEBUG_APPROVAL_FILE = 'allow-auto-debug.json';
@@ -201,6 +207,21 @@ export class RooTraceMCPHandler {
    * Запускает MCP-сервер RooTrace
    */
   async start(): Promise<void> {
+    // Инициализация мониторинга контекста
+    contextMonitor.setConfig({
+      maxAnomalyScore: 50,
+      maxMessages: 1000,
+      maxToolCalls: 500,
+      resetOnAnomalyThreshold: true
+    });
+    
+    // Устанавливаем callback для автоматического сброса сессии
+    contextMonitor.setResetCallback((reason: string, sessionId: string) => {
+      logInfo(`[MCP] Auto-resetting session ${sessionId} due to: ${reason}`, 'RooTraceMCPHandler');
+      // Сбрасываем мониторинг (сессия будет пересоздана при следующем запросе)
+      contextMonitor.resetSession(sessionId);
+    });
+    
     // Настройка инструментов MCP (JSON Schema формат)
     const tools = [
       {
@@ -345,6 +366,36 @@ export class RooTraceMCPHandler {
         }
       },
       {
+        name: 'read_file',
+        description: 'Читает один или несколько файлов параллельно. Поддерживает чтение до 100 файлов за один запрос. Можно указать либо path (один файл), либо paths (массив файлов). Опционально можно указать startLine и endLine для чтения диапазона строк (только для одного файла).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: {
+              type: 'string',
+              description: 'Путь к файлу для чтения (если не указан paths).'
+            },
+            paths: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Массив путей к файлам для параллельного чтения (максимум 100). Если указан, игнорируется path.'
+            },
+            startLine: {
+              type: 'number',
+              description: 'Начальная строка для чтения (только для одного файла).'
+            },
+            endLine: {
+              type: 'number',
+              description: 'Конечная строка для чтения (только для одного файла).'
+            },
+            limit: {
+              type: 'number',
+              description: 'Максимальное количество файлов для чтения (по умолчанию 100).'
+            }
+          }
+        }
+      },
+      {
         name: 'mcp--roo-trace--get_problems',
         description: 'Получает диагностики (ошибки и предупреждения) из VS Code Problems panel. Используйте этот инструмент для автоматического обнаружения и исправления ошибок в коде. Можно указать конкретный файл или получить все диагностики workspace.',
         inputSchema: {
@@ -433,30 +484,49 @@ export class RooTraceMCPHandler {
       const { name, arguments: args = {} } = request.params;
       this.logMCPRequest(`call_tool:${name}`, args);
 
+      // Получаем sessionId из аргументов или используем дефолтный
+      const sessionId = (args as any)?.sessionId || 'default';
+      
+      // Валидация и мониторинг входящего вызова инструмента
+      const validation = contextMonitor.validateAndMonitorToolCall(sessionId, name, args, false);
+      if (!validation.valid) {
+        logDebug(`[MCP] Tool call validation failed: ${validation.validation.errors.join(', ')}`);
+        // Продолжаем выполнение, но логируем предупреждение
+      }
+      if (validation.shouldReset) {
+        logDebug(`[MCP] Session ${sessionId} should be reset due to anomalies`);
+        // Сбрасываем мониторинг, но продолжаем выполнение
+        contextMonitor.resetSession(sessionId);
+      }
+
       try {
         let result: CallToolResult;
 
         switch (name) {
           case 'read_runtime_logs': {
             const { sessionId } = args as { sessionId?: string };
-            const approval = this.checkReadRuntimeLogsApproval();
-            if (!approval.allowed) {
-              result = {
-                content: [{
-                  type: 'text',
-                  text: JSON.stringify({
-                    success: false,
-                    errorCode: 'FORBIDDEN_USER_ACTION_REQUIRED',
-                    error: 'FORBIDDEN: read_runtime_logs must be triggered by the USER via button (dashboard/popup).',
-                    reason: approval.reason || 'not approved',
-                    requiredAction: 'Click the "Read logs" / "Logs ready" button in VS Code UI.'
-                  })
-                }],
-                isError: true
-              };
-              break;
+            // Проверяем, является ли запрос queued сообщением (неявное одобрение)
+            const queued = (args as any).__queued === true;
+            if (!queued) {
+              const approval = this.checkReadRuntimeLogsApproval();
+              if (!approval.allowed) {
+                result = {
+                  content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                      success: false,
+                      errorCode: 'FORBIDDEN_USER_ACTION_REQUIRED',
+                      error: 'FORBIDDEN: read_runtime_logs must be triggered by the USER via button (dashboard/popup).',
+                      reason: approval.reason || 'not approved',
+                      requiredAction: 'Click the "Read logs" / "Logs ready" button in VS Code UI.'
+                    })
+                  }],
+                  isError: true
+                };
+                break;
+              }
             }
-            // Принудительно перезагружаем логи из файла перед чтением (для синхронизации с HTTP сервером)
+            // Принудительно перезагружаем логи из файла перед чтением (для синхронизации с HTTP сервера)
             await sharedStorage.reloadLogsFromFile();
             const logs = await sharedStorage.getLogs();
             result = {
@@ -465,7 +535,8 @@ export class RooTraceMCPHandler {
                 text: JSON.stringify({
                   logs,
                   count: logs.length,
-                  sessionId: sessionId || 'current'
+                  sessionId: sessionId || 'current',
+                  queued: queued // возвращаем признак queued для отладки
                 })
               }]
             };
@@ -554,6 +625,10 @@ export class RooTraceMCPHandler {
 
           case 'clear_session': {
             const { sessionId } = args as { sessionId?: string };
+            const actualSessionId = sessionId || 'default';
+            
+            // Сбрасываем мониторинг контекста для этой сессии
+            contextMonitor.resetSession(actualSessionId);
             
             try {
               // БЕЗОТКАЗНАЯ ОЧИСТКА: Собираем список файлов из всех источников
@@ -1198,6 +1273,109 @@ export class RooTraceMCPHandler {
             break;
           }
 
+          case 'read_file': {
+            const { path: singlePath, paths, startLine, endLine, limit } = args as {
+              path?: string;
+              paths?: string[];
+              startLine?: number;
+              endLine?: number;
+              limit?: number;
+            };
+
+            // Определяем список файлов для чтения
+            let fileList: string[] = [];
+            const maxLimit = limit ? Math.min(limit, 100) : 100; // максимальный лимит 100 файлов
+
+            if (paths && Array.isArray(paths)) {
+              fileList = paths.slice(0, maxLimit);
+            } else if (singlePath && typeof singlePath === 'string') {
+              fileList = [singlePath];
+            } else {
+              result = {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    success: false,
+                    error: 'Missing or invalid parameters: either "path" (string) or "paths" (array) must be provided',
+                    errorCode: 'MISSING_PARAMETERS'
+                  })
+                }],
+                isError: true
+              };
+              break;
+            }
+
+            // Если передан только один файл и указаны startLine/endLine, применяем диапазон
+            const useRange = fileList.length === 1 && (startLine !== undefined || endLine !== undefined);
+            const rangeStart = startLine !== undefined ? Math.max(1, startLine) : 1;
+            const rangeEnd = endLine !== undefined ? Math.max(rangeStart, endLine) : Infinity;
+
+            try {
+              // Чтение файлов параллельно
+              const readPromises = fileList.map(async (filePath) => {
+                try {
+                  const absolutePath = path.resolve(filePath);
+                  const content = await fs.promises.readFile(absolutePath, 'utf-8');
+                  
+                  // Применяем диапазон строк, если нужно
+                  if (useRange) {
+                    const lines = content.split('\n');
+                    const start = rangeStart - 1;
+                    const end = rangeEnd === Infinity ? lines.length : Math.min(rangeEnd, lines.length);
+                    if (start >= lines.length || start < 0 || end <= start) {
+                      return {
+                        path: filePath,
+                        content: '',
+                        error: `Invalid line range: start=${rangeStart}, end=${rangeEnd}, file lines=${lines.length}`
+                      };
+                    }
+                    const slicedLines = lines.slice(start, end);
+                    return {
+                      path: filePath,
+                      content: slicedLines.join('\n'),
+                      lineRange: { start: rangeStart, end: rangeEnd }
+                    };
+                  }
+                  
+                  return { path: filePath, content };
+                } catch (err) {
+                  return {
+                    path: filePath,
+                    content: '',
+                    error: err instanceof Error ? err.message : String(err)
+                  };
+                }
+              });
+
+              const results = await Promise.all(readPromises);
+
+              result = {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    success: true,
+                    files: results,
+                    count: results.length,
+                    lineRange: useRange ? { start: rangeStart, end: rangeEnd } : undefined
+                  })
+                }]
+              };
+            } catch (error) {
+              result = {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    success: false,
+                    error: `Failed to read files: ${error instanceof Error ? error.message : String(error)}`,
+                    errorCode: 'READ_FILE_FAILED'
+                  })
+                }],
+                isError: true
+              };
+            }
+            break;
+          }
+
           case 'mcp--roo-trace--get_problems': {
             const { filePath } = args as { filePath?: string };
             
@@ -1374,6 +1552,27 @@ export class RooTraceMCPHandler {
             };
         }
 
+        // Валидация ответа инструмента
+        const responseValidation = contextMonitor.validateToolResponse(sessionId, result);
+        if (!responseValidation.valid) {
+          logDebug(`[MCP] Tool response validation failed: ${responseValidation.errors.join(', ')}`);
+          // Продолжаем, но логируем предупреждение
+        }
+
+        // Мониторинг аномалий в ответе (если это ошибка)
+        if (result.isError) {
+          const firstContent = result.content?.[0];
+          const errorText = (firstContent && 'text' in firstContent) ? firstContent.text : '';
+          contextMonitor.validateAndMonitorToolCall(sessionId, name, args, true);
+          if (errorText) {
+            const messageValidation = contextMonitor.validateAndMonitorMessage(sessionId, errorText, 'tool');
+            if (messageValidation.shouldReset) {
+              logDebug(`[MCP] Session ${sessionId} should be reset due to error anomalies`);
+              contextMonitor.resetSession(sessionId);
+            }
+          }
+        }
+
         const duration = Date.now() - startTime;
         this.logMCPResponse(`call_tool:${name}`, result, duration);
         return result;
@@ -1382,8 +1581,11 @@ export class RooTraceMCPHandler {
         const duration = Date.now() - startTime;
         this.logMCPError(`call_tool:${name}`, error, duration);
         
+        // Мониторинг ошибок
+        contextMonitor.validateAndMonitorToolCall(sessionId, name, args, true);
+        
         // Возвращаем структурированный error response вместо throw
-        return {
+        const errorResult: CallToolResult = {
           content: [{
             type: 'text',
             text: JSON.stringify({
@@ -1395,6 +1597,11 @@ export class RooTraceMCPHandler {
           }],
           isError: true
         };
+        
+        // Валидация ответа об ошибке
+        contextMonitor.validateToolResponse(sessionId, errorResult);
+        
+        return errorResult;
       }
     });
 
