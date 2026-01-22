@@ -1,0 +1,2147 @@
+в ру код (где работает наше расширение) есть индексация кода! ее надо использовать обязательно! вот документация по ней
+
+Codebase Indexing
+
+Codebase Indexing transforms how Roo Code understands your project by creating a semantic search index using AI embeddings. Instead of searching for exact text matches, it understands the meaning of your queries, helping Roo find relevant code even when you don't know specific function names or file locations.
+
+
+
+What It Does
+
+When enabled, the indexing system:
+
+Parses your code using Tree-sitter to identify semantic blocks (functions, classes, methods)
+Creates embeddings of each code block using AI models
+Stores vectors in a Qdrant database for fast similarity search
+Provides the codebase_search tool to Roo for intelligent code discovery
+This enables natural language queries like "user authentication logic" or "database connection handling" to find relevant code across your entire project.
+
+Quick Start Guide
+
+💰 Completely Free Setup Available
+You can set up codebase indexing at zero cost by using:
+
+Qdrant Cloud (free tier) or Docker Qdrant (completely free)
+Google Gemini (currently free)
+This gives you professional-grade semantic search without any subscription fees!
+Step 1: Choose Your Setup
+
+Before enabling codebase indexing, you'll need two components:
+
+An Embedding Provider - to convert code into searchable vectors
+A Vector Database - to store and search those vectors
+Step 2: Set Up Qdrant (Vector Database)
+
+Option A: Cloud Setup (Recommended for Getting Started) - FREE
+
+Sign up at Qdrant Cloud (free tier available)
+Create a cluster
+Copy your URL and API key
+Option B: Local Setup - FREE
+
+Using Docker:
+
+docker run -d \
+  --name qdrant \
+  --restart unless-stopped \
+  -p 6333:6333 \
+  -v qdrant_data:/qdrant/storage \
+  qdrant/qdrant
+
+Using Docker Compose:
+
+services:
+  qdrant:
+    image: qdrant/qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+volumes:
+  qdrant_storage:
+
+Step 3: Set Up an Embedding Provider
+
+Google Gemini Setup (Recommended) - FREE
+
+Get an API key from Google AI Studio (currently free)
+In Roo Code settings:
+Provider: Google Gemini
+API Key: Your Google AI Studio key
+Other Providers Available
+While this guide focuses on Google Gemini since it's currently free, Roo Code also supports OpenAI, Ollama, and OpenAI-compatible providers. You can explore these options in the configuration dropdown.
+Step 4: Save
+
+Click Save and Start Indexing
+The status indicator will show:
+
+Yellow (Indexing): Currently processing files
+Green (Indexed): Ready for searches
+Red (Error): Check troubleshooting section
+Managing and Configuring the Indexer
+
+You can monitor the status and manage all configuration for the codebase indexer directly from the Roo Code chat interface.
+
+The Status Icon
+
+At the bottom-right corner of the chat input, you'll find the Codebase Indexing status icon. This icon provides a quick, at-a-glance overview of the indexer's current state.
+
+Codebase Indexing Status Icon
+The color of the icon indicates the state:
+
+🟢 Green: Indexed. The index is up-to-date and ready for search.
+🟡 Yellow: Indexing. The system is actively processing files. Searches can still be performed, but results may be incomplete.
+🔴 Red: Error. An issue has occurred (e.g., failed to connect to Qdrant or the embedding provider). See the Troubleshooting section for help.
+⚪ Gray: Standby. The indexer is waiting for configuration or has been disabled.
+Multi-Folder Workspaces: In multi-folder workspaces, each folder maintains its own indexing status and configuration. The status icon reflects the combined state of all workspace folders.
+
+The Configuration Popover
+
+Clicking the status icon opens the main configuration popover. Here, you can view the detailed status and manage all settings.
+
+Codebase Indexing Popover
+Status: A detailed message showing the current state, such as "Indexed - File watcher started" or the progress of an ongoing scan.
+Setup: Contains the primary fields for connecting to your embedding provider and vector database.
+Advanced Configuration: Allows you to fine-tune search parameters like the similarity threshold.
+Clear Index Data: Deletes all data from the Qdrant collection and clears the local file cache. Use this when you want to re-index your entire project from scratch. This action cannot be undone.
+Save: Applies your configuration changes. If a critical setting (like an API key or a model) is changed, the indexer will automatically restart.
+Detailed Configuration Fields
+
+This guide explains each setting available in the configuration popover.
+
+Codebase Indexing Configuration Details
+Setup Fields
+
+Embedder Provider
+
+Purpose: To select your source for generating AI embeddings.
+Behavior: This dropdown menu determines which configuration fields are shown. Your options are OpenAI, Google Gemini, Ollama, and OpenAI Compatible.
+API Key (for OpenAI, Gemini, OpenAI Compatible)
+
+Purpose: The secret key to authenticate with your chosen provider.
+Behavior: This input is required for all cloud-based providers and is stored securely in your VS Code secret storage.
+Base URL (for Ollama, OpenAI Compatible)
+
+Purpose: The endpoint for connecting to the provider's API.
+Behavior: For Ollama, this is typically http://localhost:11434. For OpenAI Compatible providers like Azure, this is the full deployment URL.
+Model
+
+Purpose: To select the specific embedding model you want to use.
+Behavior: The list of available models changes based on the selected provider. The model's vector dimension (e.g., 1536 dimensions) is displayed, as changing dimensions requires a full re-index.
+Qdrant URL
+
+Purpose: The connection endpoint for your Qdrant vector database.
+Behavior: This must be a valid URL pointing to your local or cloud-based Qdrant instance (e.g., http://localhost:6333).
+Qdrant API Key
+
+Purpose: The authentication key for a secured Qdrant instance.
+Behavior: This field is optional and should only be used if your Qdrant deployment requires an API key.
+Advanced Configuration Fields
+
+Search Score Threshold
+
+Purpose: Controls the minimum similarity score required for a code snippet to be considered a match.
+Behavior: Use the slider to set a value between 0.0 and 1.0. A lower value returns more (but potentially less relevant) results, while a higher value returns fewer, more precise results.
+Recommended Settings:
+Low (0.15-0.3): Broader results, good for exploration
+Medium (0.4-0.5): Balanced precision and recall (default: 0.4)
+High (0.6-0.8): Precise matches only
+Maximum Search Results
+
+Purpose: Sets the maximum number of code snippets returned by a single codebase_search.
+Behavior: Use the slider to adjust the limit. This helps control the amount of context provided to the AI.
+Key Benefits
+
+Semantic Search: Find code by meaning, not just keywords
+Enhanced AI Understanding: Roo can better comprehend and work with your codebase
+Cross-Project Discovery: Search across all files, not just what's open
+Pattern Recognition: Locate similar implementations and code patterns
+How Files Are Processed
+
+Smart Code Parsing
+
+The system uses a sophisticated parsing strategy:
+
+Tree-sitter First: For supported languages, it uses AST parsing to identify semantic code blocks (functions, classes, methods)
+Markdown Support: Indexes Markdown files by treating headers as semantic entry points
+Intelligent Fallback: For unsupported file types, it falls back to line-based chunking
+Block Sizing:
+
+Minimum: 100 characters
+Maximum: 1,000 characters
+Large functions are split intelligently at logical boundaries
+File Filtering
+
+The indexer respects your project's ignore patterns:
+
+Files matching .gitignore patterns
+Files matching .rooignore patterns
+Binary files and images
+Files larger than 1MB
+Important: Ensure your .gitignore includes common dependency folders like node_modules, vendor, target, etc., as the system relies exclusively on these patterns for filtering.
+
+Incremental Updates
+
+File Watching: Monitors your workspace for changes in real-time
+Smart Updates: Only reprocesses modified files
+Branch Aware: Automatically handles Git branch switches
+Hash-based Caching: Avoids reprocessing unchanged content
+Multi-Folder Workspaces: Each folder in a multi-folder workspace maintains its own index with separate settings and status
+Best Practices
+
+Writing Effective Queries
+
+Instead of searching for exact syntax:
+
+❌ const getUser
+✅ function to fetch user from database
+Use natural language descriptions:
+
+"authentication middleware"
+"error handling for API requests"
+"database connection setup"
+Security Considerations
+
+API Keys: Stored securely in VS Code's encrypted storage
+Code Privacy: Only small code snippets sent for embedding
+Local Processing: All parsing happens locally
+Access Control: Respects file permissions and ignore patterns
+Troubleshooting
+
+Connection Issues
+
+"Connection to Qdrant failed"
+
+Ensure Qdrant is running (docker ps to check)
+Verify URL matches (default: http://localhost:6333)
+Check firewall/network policies
+For cloud instances, confirm URL and API key
+"Invalid API Key" or "401 Unauthorized"
+
+Double-check your API key is correct
+Ensure the key has necessary permissions
+For Ollama, verify the service is running
+API Key Format Errors (“ByteString conversion”)
+
+Symptom: Error mentions "ByteString conversion" during indexing or when saving settings
+Likely cause: Your embedding provider API key contains invalid/special characters or hidden whitespace
+Fix:
+Regenerate a fresh API key from your provider dashboard
+Paste the key again, ensuring no leading/trailing spaces or hidden characters
+Roo will display a clear validation message if the key is invalid
+Model Issues
+
+"Model Not Found"
+
+For Google Gemini: Ensure the model name is correct (e.g., text-embedding-004)
+For other providers: Consult their documentation for available models and proper naming
+Indexing Issues
+
+"Stuck in Error State"
+
+Check connection issues first
+Click "Clear Index & Re-index" in settings
+This resolves corrupted cache or collection issues
+"Indexing Taking Too Long"
+
+Normal for large codebases (10k+ files)
+Check .gitignore includes large directories
+Consider adding patterns to .rooignore
+Using the Search Feature
+
+Once indexed, Roo can use the codebase_search tool:
+
+Example Natural Language Queries:
+
+"How is user authentication handled?"
+"Database connection setup"
+"Error handling patterns"
+"API endpoint definitions"
+"Component state management"
+The tool provides:
+
+Relevant code snippets
+File paths with line numbers
+Similarity scores
+Direct navigation links
+Privacy & Data Security
+
+Your code stays private:
+
+Only small code chunks (100-1000 chars) sent for embedding
+Embeddings are one-way mathematical representations
+Local parsing means full files never leave your machine
+Use Ollama for completely offline operation
+Data Storage:
+
+Vectors stored in your chosen Qdrant instance
+You control where data lives (local/cloud)
+Easy to delete: just clear the index
+Current Limitations
+
+File Size: 1MB maximum per file
+External Dependencies: Requires embedding provider + Qdrant
+Language Support: Best results with Tree-sitter supported languages
+Future Enhancements
+
+Planned improvements:
+
+Additional embedding providers
+Multi-workspace indexing
+Enhanced filtering options
+Team collaboration features
+VS Code native search integration
+Incremental re-indexing optimizations
+
+кастомные инструкции
+
+Custom Instructions
+
+Custom Instructions allow you to personalize how Roo behaves, providing specific guidance that shapes responses, coding style, and decision-making processes.
+
+Instruction File Locations
+You can provide custom instructions using global rules (applied across all projects), workspace rules (project-specific), or through the Prompts tab interface.
+
+Global Rules Directory: Apply to all projects automatically.
+
+Linux/macOS: ~/.roo/rules/ and ~/.roo/rules-{modeSlug}/
+Windows: %USERPROFILE%\.roo\rules\ and %USERPROFILE%\.roo\rules-{modeSlug}\
+Workspace Rules: Apply only to the current project and take precedence over global rules when they conflict.
+
+Preferred Method: Directory (.roo/rules/)
+.
+├── .roo/
+│   └── rules/          # Workspace-wide rules
+│       ├── 01-general.md
+│       └── 02-coding-style.txt
+└── ... (other project files)
+
+Fallback Method: Single File (.roorules)
+.
+├── .roorules           # Workspace-wide rules (single file)
+└── ... (other project files)
+
+Mode-Specific Instructions: Apply only to a specific mode (e.g., code).
+
+Preferred Method: Directory (.roo/rules-{modeSlug}/)
+.
+├── .roo/
+│   └── rules-code/     # Rules for "code" mode
+│       ├── 01-js-style.md
+│       └── 02-ts-style.md
+└── ... (other project files)
+
+Fallback Method: Single File (.roorules-{modeSlug})
+.
+├── .roorules-code      # Rules for "code" mode (single file)
+└── ... (other project files)
+
+Rules are loaded in order: Global rules first, then workspace rules. If there's a conflict, workspace rules take precedence. See Global Rules Directory for details.
+What Are Custom Instructions?
+
+Custom Instructions define specific behaviors, preferences, and constraints beyond Roo's basic role definition. Examples include coding style, documentation standards, testing requirements, and workflow guidelines.
+
+Setting Custom Instructions
+
+Global Custom Instructions
+
+These instructions apply across all workspaces and maintain your preferences regardless of which project you're working on.
+
+How to set them:
+
+Roo Code Prompts tab showing global custom instructions interface
+Open Prompts Tab: Click the  icon in the Roo Code top menu bar
+Find Section: Find the "Custom Instructions for All Modes" section
+Enter Instructions: Enter your instructions in the text area
+Save Changes: Click "Done" to save your changes
+Global Rules Directory
+
+The Global Rules Directory feature provides reusable rules and custom instructions that automatically apply across all your projects. This system supports both global configurations and project-specific overrides.
+
+Key Benefits
+
+Without Global Rules: You had to maintain separate rule files in each project:
+
+Copy the same rules to every new project
+Update rules manually across multiple projects
+No consistency between projects
+With Global Rules: Create rules once and use them everywhere:
+
+Set up your preferred coding standards globally
+Customize specific rules per project when needed
+Maintain consistency across all your work
+Easy to update rules for all projects at once
+Directory Structure
+
+The global rules directory location is fixed and cannot be customized:
+
+Linux/macOS:
+
+~/.roo/                           # Your global Roo configuration
+├── rules/                        # General rules applied to all projects
+│   ├── coding-standards.md
+│   ├── formatting-rules.md
+│   └── security-guidelines.md
+├── rules-code/                   # Rules specific to Code mode
+│   ├── typescript-rules.md
+│   └── testing-requirements.md
+├── rules-docs-extractor/         # Rules for documentation extraction
+│   └── documentation-style.md
+└── rules-{mode}/                 # Rules for other specific modes
+    └── mode-specific-rules.md
+
+Windows:
+
+%USERPROFILE%\.roo\               # Your global Roo configuration
+├── rules\                        # General rules applied to all projects
+│   ├── coding-standards.md
+│   ├── formatting-rules.md
+│   └── security-guidelines.md
+├── rules-code\                   # Rules specific to Code mode
+│   ├── typescript-rules.md
+│   └── testing-requirements.md
+└── rules-{mode}\                 # Rules for other specific modes
+    └── mode-specific-rules.md
+
+Setting Up Global Rules
+
+Create Global Rules Directory:
+
+# Linux/macOS
+mkdir -p ~/.roo/rules
+
+# Windows
+mkdir %USERPROFILE%\.roo\rules
+
+Add General Rules (~/.roo/rules/coding-standards.md):
+
+# Global Coding Standards
+
+1. Always use TypeScript for new projects
+2. Write unit tests for all new functions
+3. Use descriptive variable names
+4. Add JSDoc comments for public APIs
+
+Add Mode-Specific Rules (~/.roo/rules-code/typescript-rules.md):
+
+# TypeScript Code Mode Rules
+
+1. Use strict mode in tsconfig.json
+2. Prefer interfaces over type aliases for object shapes
+3. Always specify return types for functions
+
+Available Rule Directories
+
+Directory	Purpose
+rules/	General rules applied to all modes
+rules-code/	Rules specific to Code mode
+rules-docs-extractor/	Rules for documentation extraction
+rules-architect/	Rules for system architecture tasks
+rules-debug/	Rules for debugging workflows
+rules-{mode}/	Rules for any custom mode
+Rule Loading Order
+
+Rules are loaded in this order:
+
+Global Rules (from ~/.roo/)
+Project Rules (from project/.roo/) - take precedence over global rules when they conflict
+[Generic only] Legacy Files (workspace root .roorules, .clinerules) - used only if no generic rules directory content was loaded
+Within each level, mode-specific rules are loaded before general rules.
+
+Workspace-Level Instructions
+
+These instructions only apply within your current workspace, allowing you to customize Roo Code's behavior for specific projects.
+
+Workspace-Wide Instructions via Files/Directories
+
+Workspace-wide instructions apply to all modes within the current project and can be defined using files:
+
+Preferred Method: Directory-Based (.roo/rules/)
+Create a directory named .roo/rules/ in your workspace root.
+Place instruction files (e.g., .md, .txt) inside. Roo Code reads files recursively (including subdirectories), appending their content to the system prompt in alphabetical order based on filename.
+When this directory exists and contains files, its contents are loaded along with any global rules directories.
+Note: If the .roo/rules/ directory exists but is empty, Roo Code will fall back to using the .roorules file instead.
+Fallback Method: File-Based (.roorules)
+If .roo/rules/ doesn't exist or is empty, Roo Code looks for a single .roorules file in the workspace root.
+If found, its content is loaded.
+Mode-Specific Instructions
+
+Mode-specific instructions can be set in two independent ways that can be used simultaneously:
+
+Using the Prompts Tab:
+
+Roo Code Prompts tab showing mode-specific custom instructions interface
+Open Tab: Click the  icon in the Roo Code top menu bar
+
+Select Mode: Under the Modes heading, click the button for the mode you want to customize
+
+Enter Instructions: Enter your instructions in the text area under "Mode-specific Custom Instructions (optional)"
+
+Save Changes: Click "Done" to save your changes
+
+Global Mode Rules
+If the mode itself is global (not workspace-specific), any custom instructions you set for it will also apply globally for that mode across all workspaces.
+Using Rule Files/Directories: Provide mode-specific instructions via files:
+
+Preferred Method: Directory-Based (.roo/rules-{modeSlug}/)
+Create a directory named .roo/rules-{modeSlug}/ (e.g., .roo/rules-docs-writer/) in your workspace root.
+Place instruction files inside (recursive loading, including subdirectories). Files are read and appended to the system prompt in alphabetical order by filename.
+This method takes precedence over the fallback file method for the specific mode if the directory exists and contains files.
+Fallback Method: File-Based (.roorules-{modeSlug})
+If .roo/rules-{modeSlug}/ doesn't exist or is empty, Roo Code looks for a single .roorules-{modeSlug} file (e.g., .roorules-code) in the workspace root.
+If found, its content is loaded for that mode.
+Instructions from the Prompts tab, global rules, workspace rules, and mode-specific rules are all combined. See the section below for the exact order.
+
+How Instructions are Combined
+
+Instructions are placed in the system prompt in this exact format:
+
+====
+USER'S CUSTOM INSTRUCTIONS
+
+The following additional instructions are provided by the user, and should be followed to the best of your ability without interfering with the TOOL USE guidelines.
+
+Language Preference:
+[Language preference if set]
+
+Global Instructions:
+[Global Instructions from Prompts Tab]
+
+Mode-specific Instructions:
+[Mode-specific Instructions from Prompts Tab for the current mode]
+
+Rules:
+
+# Rules from rules-{modeSlug} directories:
+[Contents of ALL files from ~/.roo/rules-{modeSlug}/ AND .roo/rules-{modeSlug}/ if they exist]
+
+# Rules from .roorules-{modeSlug}:
+[Contents of .roorules-{modeSlug} file if no mode-specific directories have files]
+
+# Rules from .rooignore:
+[.rooignore-related instructions if applicable]
+
+# Agent Rules Standard (AGENTS.md):
+[Contents of AGENTS.md or AGENT.md from workspace root if present and enabled]
+
+# Rules from rules directories:
+[Contents of ALL files from ~/.roo/rules/ AND .roo/rules/ if they exist]
+
+# Rules from .roorules:
+[Contents of .roorules file if no general rules directories have files]
+
+====
+
+Note: The system loads rules from ALL applicable directories (both global ~/.roo/ and workspace .roo/), not just the first one with files. Mode-specific rules appear before general rules. Directory-based rules take precedence over file-based fallbacks only when determining which method to use, but all applicable directories are read.
+
+Rules about .rules files
+
+File Location: The preferred method uses directories within .roo/ (.roo/rules/ and .roo/rules-{modeSlug}/). The fallback method uses single files (.roorules and .roorules-{modeSlug}) located directly in the workspace root.
+Recursive Reading: Rules directories are read recursively, including all files in subdirectories
+File Filtering: System automatically excludes cache and temporary files (.DS_Store, *.bak, *.cache, *.log, *.tmp, Thumbs.db, etc.)
+Empty Files: Empty or missing rule files are silently skipped
+Source Headers: Directory-based rules include per-file headers # Rules from {absolute path}:, while file-based rules include # Rules from {filename}: headers
+Aggregation: Both global and workspace rules directories are aggregated for mode-specific and generic rules (not either-or)
+Sorting: Files are sorted by basename only, case-insensitive
+Header Paths: Header paths are absolute and follow symlinks
+Rule Interaction: Mode-specific rules complement global rules rather than replacing them
+Symbolic Links: Fully supported for both files and directories, with a maximum resolution depth of 5 to prevent infinite loops
+AGENTS.md Support
+
+Roo Code also supports loading rules from an AGENTS.md (or AGENT.md as fallback) file in your workspace root:
+
+Purpose: Provides agent-specific rules and guidelines for AI behavior
+Location: Must be in the workspace root directory
+Loading: Automatically loaded by default. To disable AGENTS.md loading, set "roo-cline.useAgentRules": false in your VSCode settings
+Setting: roo-cline.useAgentRules (default: true)
+Preference: If both exist, AGENTS.md is preferred over AGENT.md
+Priority: Loaded after mode-specific rules and .rooignore, before generic rules from both ~/.roo/rules and .roo/rules
+Header: Added to system prompt with header # Agent Rules Standard (AGENTS.md): or (AGENT.md): accordingly
+Empty Files: Empty or whitespace-only AGENTS.md is ignored
+Symbolic Links: Symbolic links to files or directories are resolved before reading
+This feature allows teams to maintain standardized AI agent behavior rules that can be version-controlled alongside the project code.
+
+Examples of Custom Instructions
+
+"Always use spaces for indentation, with a width of 4 spaces"
+"Use camelCase for variable names"
+"Write unit tests for all new functions"
+"Explain your reasoning before providing code"
+"Focus on code readability and maintainability"
+"Prioritize using the most common library in the community"
+"When adding new features to websites, ensure they are responsive and accessible"
+Pro Tip: Team Standardization
+For team environments, consider these approaches:
+
+Project Standards: Use workspace .roo/rules/ directories under version control to standardize Roo's behavior for specific projects. This ensures consistent code style and development workflows across team members.
+
+Organization Standards: Use global rules (~/.roo/rules/) to establish organization-wide coding standards that apply to all projects. Team members can set up identical global rules for consistency across all work.
+
+Hybrid Approach: Combine global rules for organization standards with project-specific workspace rules for project-specific requirements. When rules conflict, workspace rules take precedence.
+
+The directory-based approach offers better organization than single .roorules files and supports both global and project-level customization.
+
+диагностика
+
+Diagnostics Integration
+
+Roo Code provides intelligent integration with VSCode's Problems panel, allowing the AI assistant to understand and help fix code errors, warnings, and other issues detected by language servers, linters, and other diagnostic providers.
+
+Overview
+
+The diagnostics feature seamlessly integrates with VSCode's diagnostic system to provide context-aware assistance for code issues. When you make edits or encounter problems in your code, Roo Code can automatically detect and help resolve them.
+
+Key Capabilities
+
+Automatic Error Detection: Captures new errors introduced during code edits
+Context-Aware Fixes: Provides targeted fixes based on diagnostic information
+Workspace Problems Mention: Access all workspace diagnostics through a simple mention
+Smart Filtering: Uses predefined severity levels for different contexts
+Key Features
+
+1. Automatic Error Detection
+
+When Roo Code makes edits to files, it automatically:
+
+Captures diagnostics before editing
+Waits for diagnostics to update after editing
+Detects new problems introduced by the changes
+Only reports new errors (not pre-existing ones)
+This ensures you're immediately aware of any issues introduced by code changes, allowing for quick resolution.
+
+2. Workspace Problems Mention
+
+Users can include @problems in their messages to:
+
+Get a complete list of workspace errors and warnings
+Provide context for debugging tasks
+Request fixes for specific issues
+Example usage:
+
+@problems Fix all TypeScript errors in my project
+
+For more details on using @problems, see Context Mentions.
+
+3. Code Actions Integration
+
+When diagnostics exist at a cursor position:
+
+"Fix with Roo Code" action appears in quick fix menu
+Includes diagnostic details in the fix request
+Provides targeted solutions based on error context
+Learn more about this integration in Code Actions.
+
+4. Smart Severity Filtering
+
+Different features use different severity filters to provide the most relevant information:
+
+Workspace Problems mention: Shows errors and warnings
+Automatic detection: Shows only errors (to avoid distraction)
+Context-Aware: Different features use different hardcoded severity filters
+Severity Levels
+
+The diagnostics system recognizes four severity levels from VSCode:
+
+Level	Value	Description	Workspace Problems	Auto-detection
+Error	0	Syntax errors, type errors, breaking issues	✅ Included	✅ Included
+Warning	1	Code quality issues, deprecations, style violations	✅ Included	❌ Not included
+Information	2	Suggestions, hints, informational messages	❌ Not included	❌ Not included
+Hint	3	Minor suggestions, refactoring opportunities	❌ Not included	❌ Not included
+Why Different Filters?
+
+Workspace Problems (@problems): Includes both errors and warnings to give you a complete picture of code health when explicitly requested
+Automatic Detection: Only includes errors to avoid interrupting your workflow with non-critical issues
+Using Diagnostics Effectively
+
+For Debugging Sessions
+
+When starting a debugging session, include @problems to give Roo Code full context:
+
+@problems Help me debug why my application is crashing
+
+For Code Reviews
+
+Use diagnostics to ensure code quality:
+
+@problems Review my code and fix any linting issues
+
+For Refactoring
+
+Let diagnostics guide safe refactoring:
+
+I want to refactor this function. @problems shows current issues to address.
+
+Integration with Other Features
+
+Code Actions
+
+Diagnostics power the context-aware Code Actions that appear in VSCode's lightbulb menu. When errors are present, you'll see "Fix Code" options that include the specific diagnostic information.
+
+Context Mentions
+
+The @problems mention provides a convenient way to include all workspace diagnostics in your conversation without manually copying error messages.
+
+Automatic Error Reporting
+
+When Roo Code edits files, any new errors introduced are automatically reported in the response, helping maintain code quality throughout the editing process.
+
+Best Practices
+
+Use @problems for Context: When debugging, always include @problems to give Roo Code full visibility into current issues
+
+Address Errors First: Focus on fixing errors before warnings, as errors typically prevent code from running
+
+Leverage Code Actions: Use the quick fix menu for targeted fixes to specific diagnostics
+
+Monitor Auto-Detection: Pay attention to new errors reported after edits to catch issues early
+
+Combine with Other Tools: Use diagnostics alongside other Roo Code features like codebase search and file mentions for comprehensive problem-solving
+
+Troubleshooting
+
+Diagnostics Not Appearing
+
+Ensure your language server or linter is properly configured and running
+Check that the file type is supported by your diagnostic providers
+Verify that VSCode's Problems panel shows the issues
+@problems Shows Nothing
+
+Confirm there are actually problems in the Problems panel
+Check that you're in the correct workspace
+Some diagnostic providers may take time to initialize
+Auto-Detection Missing Errors
+
+Only new errors (introduced by edits) are reported
+Pre-existing errors won't be shown in auto-detection
+Use @problems to see all current issues
+
+кастомизация моделей
+
+Customizing Modes
+
+Roo Code allows you to create custom modes to tailor Roo's behavior to specific tasks or workflows. Custom modes can be either global (available across all projects) or project-specific (defined within a single project).
+
+
+
+Sticky Models for Efficient Workflow
+Each mode—including custom ones—features Sticky Models. This means Roo Code automatically remembers and selects the last model you used with a particular mode. This lets you assign different preferred models to different tasks without constant reconfiguration, as Roo switches between models when you change modes.
+Discover Community Modes
+Looking for ready-to-use custom modes? Visit the Roo Code Marketplace to browse and install community-contributed modes with a single click. The marketplace offers specialized modes for various tasks like React development, documentation writing, testing, and more—all created and shared by the Roo Code community.
+Why Use Custom Modes?
+
+Specialization: Create modes optimized for specific tasks, like "Documentation Writer," "Test Engineer," or "Refactoring Expert."
+Safety: Restrict a mode's access to sensitive files or commands. For example, a "Review Mode" could be limited to read-only operations.
+Experimentation: Safely experiment with different prompts and configurations without affecting other modes.
+Team Collaboration: Share custom modes with your team to standardize workflows.
+Overview of custom modes interface
+Roo Code's interface for creating and managing custom modes.
+
+What's Included in a Custom Mode?
+
+Custom modes are defined by several key properties. Understanding these concepts will help you tailor Roo's behavior effectively.
+
+UI Field / YAML Property	Conceptual Description
+Slug (slug)	A unique internal identifier for the mode. It's used by Roo Code to reference the mode, especially for associating mode-specific instruction files.
+Name (name)	The display name for the mode as it appears in the Roo Code user interface. This should be human-readable and descriptive.
+Description (description)	A short, user-friendly summary of the mode's purpose displayed in the mode selector UI.
+- This text appears below the mode's name in the redesigned mode selector, offering users a quick understanding of the mode's function.
+- Keep this concise and focused on what the mode does for the user.
+Role Definition (roleDefinition)	Defines the core identity and expertise of the mode. This text is placed at the beginning of the system prompt.
+- Its primary function is to define Roo's personality and behavior when this mode is active.
+- With the introduction of the description field, the roleDefinition should provide a detailed description of the mode's identity, while the description field handles the short summary for the UI.
+- The whenToUse property now takes precedence for summarization in automated contexts like task orchestration.
+Available Tools (groups)	Defines the allowed toolsets and file access permissions for the mode.
+- In the UI, this corresponds to selecting which general categories of tools (like reading files, editing files, browsing, or executing commands) the mode can use.
+- The UI shows which files can be edited in the 'Allowed files' section under each mode.
+- File type restrictions for the "edit" group are typically managed via manual YAML/JSON configuration or by asking Roo to set them up, as detailed in the Property Details for groups.
+When to Use (optional) (whenToUse)	(Optional) Provides guidance for Roo's automated decision-making, particularly for mode selection and task orchestration.
+- This text is used by Roo, particularly the 🪃 Orchestrator mode, for orchestrating tasks (e.g., via the new_task tool).
+- It also helps Roo decide which mode is appropriate when switching modes (e.g., via the switch_mode tool).
+- This field is not displayed in the mode selector UI - that's handled by the description field.
+Custom Instructions (optional) (customInstructions)	Specific behavioral guidelines or rules for the mode.
+- These instructions are added near the end of the system prompt to further refine Roo's behavior beyond the roleDefinition.
+- This can be provided directly in the configuration or via separate instruction files.
+Import/Export Modes
+
+Easily share, back up, and template your custom modes. This feature lets you export any mode—and its associated rules—into a single, portable YAML file that you can import into any project.
+
+Key Features
+
+Shareable Setups: Package a mode and its rules into one file to easily share with your team.
+Easy Backups: Save your custom mode configurations so you never lose them.
+Project Templates: Create standardized mode templates for different types of projects.
+Simple Migration: Move modes between your global settings and specific projects effortlessly.
+Flexible Slug Changes: Change mode slugs in exported files without manual path editing.
+Use Case
+
+Before: Manually recreating custom modes and copying .roo/rules-{slug}/ folders for each new project or team member. Changing slugs required manual path updates in the YAML file.
+
+With this feature: A single click exports a mode and all its rules to a YAML file. Another click imports it, setting everything up automatically. You can now change the slug in the exported file and the import process handles all path updates automatically.
+
+How it Works
+
+The import/export functionality is managed from the Modes view.
+
+Mode Export and Import Buttons
+
+Exporting a Mode
+
+Navigate to the Modes view.
+Select the mode you wish to export.
+Click the Export Mode button (the download icon).
+Choose a location to save the .yaml file.
+Roo packages the mode's configuration and any rules found in the project's .roo/rules-{slug}/ directory into the YAML file.
+
+Importing a Mode
+
+Click the Import Mode button (the upload icon) in the Modes view.
+Select the mode's YAML file.
+Choose the import level in the dialog that appears: Import Level Dialog
+Project: The mode is available only in the current workspace. It's added to the .roomodes file, and its rules are saved to the .roo/rules-{slug}/ directory within the project.
+Global: The mode is available in all your projects. It's added to your global settings, and its rules are stored in your system's global Roo configuration directory (e.g., ~/.roo/rules-{slug}/).
+Note: When exporting modes with rules, all file paths are normalized to use forward slashes for cross-platform compatibility. This ensures modes can be shared between team members using different operating systems.
+
+Exported YAML file format:
+
+customModes:
+  - slug: "my-custom-mode"
+    name: "My Custom Mode"
+    roleDefinition: "You are a helpful assistant."
+    groups: ["read", "edit"]
+    rulesFiles:
+      - relativePath: "rules-my-custom-mode/rules.md"
+        content: "These are the rules for my custom mode."
+
+Changing Slugs on Import
+
+When importing modes, you can change the slug in the exported YAML file before importing:
+
+Export a mode with slug original-mode
+Edit the YAML file and change the slug to new-mode
+Import the file - the import process will:
+Create the new mode with the updated slug
+Update rule file paths to match the new slug
+Note: The automatic slug change handling during import ensures that rule file paths are updated correctly when you change the mode slug in the exported file.
+
+FAQ
+
+"What happens if I import a mode that has the same 'slug' as an existing one?"
+
+The existing mode will be overwritten with the configuration from the imported file.
+"What's the main difference between a Global and Project import?"
+
+Global modes are available across all your VS Code projects. Project modes are specific to the workspace where they are imported and are stored in a .roomodes file at the root of your project.
+"Can I export built-in modes like Code or Architect?"
+
+Yes. If you have customized a built-in mode (e.g., by changing its instructions), you can export it to save your customizations.
+"What if I import a mode with rules at the Global level?"
+
+The rules are still preserved. They are stored in a global rules-{slug} folder in your user home directory (e.g., ~/.roo/rules-my-custom-mode/) instead of the project-specific .roo folder.
+"How does the slug change feature work?"
+
+When you change the slug in an exported YAML file before importing, the import process updates the rule file paths to match the new slug. This ensures the mode works correctly with its new identity.
+Methods for Creating and Configuring Custom Modes
+
+You can create and configure custom modes in several ways:
+
+To configure modes, open the Roo Code panel, click the Mode menu under the chatbox, then click the . From there, use "Edit Global Modes" to open settings/custom_modes.yaml, or "Edit Project Modes (.roomodes)" to open your workspace-level configuration.
+
+1. Ask Roo! (Recommended)
+
+You can quickly create a basic custom mode by asking Roo Code to do it for you. For example:
+
+Create a new mode called "Documentation Writer". It should only be able to read files and write Markdown files.
+
+Roo Code will guide you through the process, prompting for necessary information for the properties described in the What's Included in a Custom Mode? table. Roo will create the mode using the preferred YAML format. For fine-tuning or making specific adjustments later, you can use the Modes page or manual configuration.
+
+2. Using the Modes Page
+
+Open the Modes page: Open the Roo Code panel, click the Mode menu under the chatbox, then click the .
+Create New Mode: Click the  button to the right of the Modes heading.
+Fill in Fields:
+Custom mode creation interface on the Modes page
+The custom mode creation interface showing fields for name, slug, description, save location, role definition, available tools, custom instructions.
+
+The interface provides fields for Name, Slug, Description, Save Location, Role Definition, When to Use (optional), Available Tools, and Custom Instructions. After filling these, click the "Create Mode" button. Roo Code will save the new mode in YAML format.
+
+Refer to the What's Included in a Custom Mode? table for conceptual explanations of each property. File type restrictions for the "edit" tool group can be added by asking Roo or through manual YAML/JSON configuration.
+
+3. Manual Configuration (YAML & JSON)
+
+You can directly edit the configuration files to create or modify custom modes. This method offers the most control over all properties. Roo Code now supports both YAML (preferred) and JSON formats.
+
+Global Modes: Edit the custom_modes.yaml (preferred) or custom_modes.json file. From the Modes page, click "Edit Global Modes" to open settings/custom_modes.yaml.
+Project Modes: Edit the .roomodes file (which can be YAML or JSON) in your project root. From the Modes page, click "Edit Project Modes (.roomodes)" to open or create the workspace file.
+These files define an array/list of custom modes.
+
+YAML Example (custom_modes.yaml or .roomodes):
+
+customModes:
+  - slug: docs-writer
+    name: 📝 Documentation Writer
+    description: A specialized mode for writing and editing technical documentation.
+    roleDefinition: You are a technical writer specializing in clear documentation.
+    whenToUse: Use this mode for writing and editing documentation.
+    customInstructions: Focus on clarity and completeness in documentation.
+    groups:
+      - read
+      - - edit  # First element of tuple
+        - fileRegex: \.(md|mdx)$  # Second element is the options object
+          description: Markdown files only
+      - browser
+  - slug: another-mode
+    name: Another Mode
+    # ... other properties
+
+JSON Alternative (custom_modes.json or .roomodes):
+
+{
+  "customModes": [
+    {
+      "slug": "docs-writer",
+      "name": "📝 Documentation Writer",
+      "description": "A specialized mode for writing and editing technical documentation.",
+      "roleDefinition": "You are a technical writer specializing in clear documentation.",
+      "whenToUse": "Use this mode for writing and editing documentation.",
+      "customInstructions": "Focus on clarity and completeness in documentation.",
+      "groups": [
+        "read",
+        ["edit", { "fileRegex": "\\.(md|mdx)$", "description": "Markdown files only" }],
+        "browser"
+      ]
+    },
+    {
+      "slug": "another-mode",
+      "name": "Another Mode"
+    }
+  ]
+}
+
+YAML/JSON Property Details
+
+slug
+
+Purpose: A unique identifier for the mode.
+Format: Must match the pattern /^[a-zA-Z0-9-]+$/ (only letters, numbers, and hyphens).
+Usage: Used internally and in file/directory names for mode-specific rules (e.g., .roo/rules-{slug}/).
+Recommendation: Keep it short and descriptive.
+Note: The source property is automatically added by the system and shouldn't be manually set.
+YAML Example: slug: docs-writer
+JSON Example: "slug": "docs-writer"
+name
+
+Purpose: The display name shown in the Roo Code UI.
+Format: Can include spaces and proper capitalization.
+YAML Example: name: 📝 Documentation Writer
+JSON Example: "name": "Documentation Writer"
+description
+
+Purpose: A short, user-friendly summary displayed below the mode name in the mode selector UI.
+Format: Keep this concise and focused on what the mode does for the user.
+UI Display: This text appears in the redesigned mode selector, offering users a quick understanding of the mode's function.
+YAML Example: description: A specialized mode for writing and editing technical documentation.
+JSON Example: "description": "A specialized mode for writing and editing technical documentation."
+roleDefinition
+
+Purpose: Detailed description of the mode's role, expertise, and personality.
+Placement: This text is placed at the beginning of the system prompt when the mode is active.
+Updated Role: With the introduction of the description field, the roleDefinition should provide a detailed description of the mode's identity, while the description field handles the short summary for the UI. The whenToUse property now takes precedence for summarization in automated contexts.
+YAML Example (multi-line):
+roleDefinition: >-
+  You are a test engineer with expertise in:
+  - Writing comprehensive test suites
+  - Test-driven development
+
+JSON Example: "roleDefinition": "You are a technical writer specializing in clear documentation."
+groups
+
+Purpose: Array/list defining which tool groups the mode can access and any file restrictions.
+Available Tool Groups (Strings): "read", "edit", "browser", "command", "mcp".
+Structure: The groups property uses a specific structure:
+Simple string for unrestricted access: "edit"
+Tuple (two-element array) for restricted access: ["edit", { fileRegex: "pattern", description: "optional" }]
+File Restrictions for "edit" group:
+To apply file restrictions, the "edit" entry becomes a tuple (YAML list or JSON array) where the first element is "edit" and the second is a map/object defining the restrictions.
+fileRegex: A regular expression string to control which files the mode can edit.
+In YAML, typically use single backslashes for regex special characters (e.g., \.md$).
+In JSON, backslashes must be double-escaped (e.g., \\.md$).
+description: An optional string describing the restriction.
+For more complex patterns, see Understanding Regex in Custom Modes.
+YAML Example:
+groups:
+  - read
+  - - edit  # First element of tuple
+    - fileRegex: \.(js|ts)$  # Second element is the options object
+      description: JS/TS files only
+  - command
+
+JSON Example:
+"groups": [
+  "read",
+  ["edit", { "fileRegex": "\\.(js|ts)$", "description": "JS/TS files only" }],
+  "command"
+]
+
+whenToUse
+
+Purpose: (Optional) Provides guidance for Roo's automated decision-making, particularly for mode selection and task orchestration.
+Format: A string describing ideal scenarios or task types for this mode.
+Usage: This field is used by Roo for automated decisions and is not displayed in the mode selector UI - that's handled by the description field. If populated, Roo uses this description for orchestration and mode switching; otherwise, the first sentence of roleDefinition is used.
+YAML Example: whenToUse: This mode is best for refactoring Python code.
+JSON Example: "whenToUse": "This mode is best for refactoring Python code."
+customInstructions
+
+Purpose: A string containing additional behavioral guidelines for the mode.
+Placement: This text is added near the end of the system prompt.
+Supplementing: Can be supplemented by Mode-Specific Instructions via Files/Directories.
+YAML Example (multi-line):
+customInstructions: |-
+  When writing tests:
+  - Use describe/it blocks
+  - Include meaningful descriptions
+
+JSON Example: "customInstructions": "Focus on explaining concepts and providing examples."
+Benefits of YAML Format
+
+YAML is now the preferred format for defining custom modes due to several advantages over JSON:
+
+Readability: YAML's indentation-based structure is often easier for humans to read and understand complex configurations.
+Comments: YAML allows for comments (lines starting with #), making it possible to annotate your mode definitions.
+customModes:
+  - slug: security-review
+    name: 🔒 Security Reviewer
+    # This mode is restricted to read-only access
+    roleDefinition: You are a security specialist reviewing code for vulnerabilities.
+    whenToUse: Use for security reviews and vulnerability assessments.
+    # Only allow reading files, no editing permissions
+    groups:
+      - read
+      - browser
+
+Multi-line Strings: YAML provides cleaner syntax for multi-line strings (e.g., for roleDefinition or customInstructions) using | (literal block) or > (folded block).
+customModes:
+  - slug: test-engineer
+    name: 🧪 Test Engineer
+    roleDefinition: >-
+      You are a test engineer with expertise in:
+      - Writing comprehensive test suites
+      - Test-driven development
+      - Integration testing
+      - Performance testing
+    customInstructions: |-
+      When writing tests:
+      - Use describe/it blocks
+      - Include meaningful descriptions
+      - Test edge cases
+      - Ensure proper coverage
+    # ... other properties
+
+Less Punctuation: YAML generally requires less punctuation (like commas and braces) compared to JSON, reducing syntax errors.
+Editor Support: Most modern code editors provide excellent syntax highlighting and validation for YAML files, further enhancing readability and reducing errors.
+While JSON is still fully supported and won't be deprecated, new modes created via the UI or by asking Roo will default to YAML. Both .roomodes files and global configuration files can be either YAML or JSON format.
+
+Tips for Working with YAML
+
+When editing YAML manually, keep these points in mind:
+
+Indentation is Key: YAML uses indentation (spaces, not tabs) to define structure. Incorrect indentation is the most common source of errors. Ensure consistent spacing for nested elements.
+Colons for Key-Value Pairs: Keys must be followed by a colon and a space (e.g., slug: my-mode).
+Hyphens for List Items: List items start with a hyphen and a space (e.g., - read).
+Validate Your YAML: If you encounter issues, use an online YAML validator or your editor's built-in validation to check for syntax errors.
+Migration to YAML Format
+
+Global Modes: The automatic migration from custom_modes.json to custom_modes.yaml happens only for global modes when Roo Code starts up, under these conditions:
+
+Roo Code starts up.
+A custom_modes.json file exists.
+No custom_modes.yaml file exists yet. The migration process reads the existing JSON file, converts it to YAML format, creates a new custom_modes.yaml file, and preserves the original JSON file (e.g., by renaming it) for rollback purposes. If custom_modes.yaml already exists, it will be used, and no automatic migration of custom_modes.json will occur.
+Project Modes (.roomodes):
+
+No automatic startup migration: Unlike global modes, project-specific .roomodes files are not automatically converted from JSON to YAML when Roo Code starts. Manual conversion is required for existing JSON .roomodes files.
+Format Detection: Roo Code can read .roomodes files in either YAML or JSON format. Roo Code automatically detects the format of .roomodes files by attempting to parse them as YAML first.
+Conversion on UI Edit: If you edit a project-specific mode through the Roo Code UI (e.g., via the Modes page), and the existing .roomodes file is in JSON format, Roo Code will save the changes in YAML format. This effectively converts the file to YAML. The original JSON content will be overwritten with YAML.
+Manual Conversion: If you want to convert an existing .roomodes JSON file to YAML without making UI edits, you'll need to do this manually. You can:
+Open your existing JSON .roomodes file.
+Convert its content to YAML (you can ask Roo to help with this, or use an online converter).
+Replace the content of your .roomodes file with the new YAML content, or rename the old file (e.g., .roomodes.json.bak) and save the new content into a file named .roomodes. Ensure the resulting YAML is valid.
+tip
+For manual conversions of .roomodes files, you can use online JSON to YAML converters or ask Roo to help reformat a specific mode configuration from JSON to YAML. Always validate your YAML before saving.
+Mode-Specific Instructions via Files/Directories
+
+Mode-Specific Instruction File Locations
+You can provide instructions for custom modes using dedicated files or directories within your workspace. This allows for better organization and version control compared to only using the customInstructions property.
+
+Preferred Method: Directory (.roo/rules-{mode-slug}/)
+
+.
+├── .roo/
+│   └── rules-docs-writer/  # Example for mode slug "docs-writer"
+│       ├── 01-style-guide.md
+│       └── 02-formatting.txt
+└── ... (other project files)
+
+Fallback Method: Single File (.roorules-{mode-slug})
+
+.
+├── .roorules-docs-writer  # Example for mode slug "docs-writer"
+└── ... (other project files)
+
+Legacy Fallback: .clinerules-{mode-slug} For backward compatibility, the system also checks for .clinerules-{mode-slug} files as an additional fallback, though this is not recommended for new projects.
+
+The directory method takes precedence if it exists and contains files.
+
+Rules Directory Scope:
+
+Global modes: Rules are stored in ~/.roo/rules-{slug}/ (note the trailing slash)
+Project modes: Rules are stored in {workspace}/.roo/rules-{slug}/ (note the trailing slash)
+In addition to the customInstructions property, you can provide mode-specific instructions via files in your workspace. This is particularly useful for:
+
+Organizing lengthy or complex instructions into multiple, manageable files.
+Managing instructions easily with version control.
+Allowing non-technical team members to modify instructions without editing YAML/JSON.
+There are two ways Roo Code loads these instructions, with a clear preference for the newer directory-based method:
+
+1. Preferred Method: Directory-Based Instructions (.roo/rules-{mode-slug}/)
+
+Structure: Create a directory named .roo/rules-{mode-slug}/ in your workspace root. Replace {mode-slug} with your mode's slug (e.g., .roo/rules-docs-writer/).
+Content: Place one or more files (e.g., .md, .txt) containing your instructions inside this directory. You can organize instructions further using subdirectories. Files within the .roo/rules-{mode-slug}/ directory are read recursively and appended in alphabetical order based on filename (case-insensitive).
+Loading: All instruction files found within this directory structure will be loaded and applied to the specified mode. System files (.DS_Store, .swp, etc.) and cache files are automatically excluded.
+Advanced Features: The system supports symbolic links with cycle detection for advanced file organization.
+2. Fallback (Backward Compatibility): File-Based Instructions (.roorules-{mode-slug})
+
+Structure: If the .roo/rules-{mode-slug}/ directory does not exist or is empty, Roo Code will look for a single file named .roorules-{mode-slug} in your workspace root (e.g., .roorules-docs-writer).
+Loading: If found, the content of this single file will be loaded as instructions for the mode.
+Precedence:
+
+The directory-based method (.roo/rules-{mode-slug}/) takes precedence. If this directory exists and contains files, any corresponding root-level .roorules-{mode-slug} file will be ignored for that mode.
+This ensures that projects migrated to the new directory structure behave predictably, while older projects using the single-file method remain compatible.
+Combining with customInstructions:
+
+Instructions loaded from either the directory or the fallback file are combined with the customInstructions property defined in the mode's configuration.
+Typically, the content from the files/directories is appended after the content from the customInstructions property.
+Configuration Precedence
+
+Mode configurations are applied in this order:
+
+Project-level mode configurations (from .roomodes - YAML or JSON)
+Global mode configurations (from custom_modes.yaml, then custom_modes.json if YAML not found)
+Default mode configurations
+Important: When modes with the same slug exist in both .roomodes and global settings, the .roomodes version completely overrides the global one. This applies to ALL properties, not just some. For instance, if you have a global 'code' mode and a project-specific 'code' mode in .roomodes, the project version will be used when working in that project, and all properties from the global version are ignored.
+
+You can override any default mode by including a mode with the same slug in your global or project-specific configuration.
+
+Note on Instruction Files: Within the loading of mode-specific instructions from the filesystem, the directory .roo/rules-{mode-slug}/ takes precedence over the single file .roorules-{mode-slug} found in the workspace root.
+Overriding Default Modes
+
+You can override Roo Code's built-in modes (like 💻 Code, 🪲 Debug, ❓ Ask, 🏗️ Architect, 🪃 Orchestrator) with customized versions. This is done by creating a custom mode with the same slug as a default mode (e.g., code, debug).
+
+Overriding Modes Globally
+
+To customize a default mode across all your projects:
+
+Open the Modes page: Open the Roo Code panel, click the Mode menu under the chatbox, then click the .
+Edit Global Modes: Click "Edit Global Modes" to open settings/custom_modes.yaml (or custom_modes.json).
+Add Your Override:
+YAML Example:
+
+customModes:
+  - slug: code # Matches the default 'code' mode slug
+    name: 💻 Code (Global Override) # Custom display name
+    roleDefinition: You are a software engineer with global-specific constraints.
+    whenToUse: This globally overridden code mode is for JS/TS tasks.
+    customInstructions: Focus on project-specific JS/TS development.
+    groups:
+      - read
+      - - edit
+        - fileRegex: \.(js|ts)$
+          description: JS/TS files only
+
+JSON Alternative:
+
+{
+  "customModes": [{
+    "slug": "code",
+    "name": "💻 Code (Global Override)",
+    "roleDefinition": "You are a software engineer with global-specific constraints",
+    "whenToUse": "This globally overridden code mode is for JS/TS tasks.",
+    "customInstructions": "Focus on project-specific JS/TS development",
+    "groups": [
+      "read",
+      ["edit", { "fileRegex": "\\.(js|ts)$", "description": "JS/TS files only" }]
+    ]
+  }]
+}
+
+This example replaces the default 💻 Code mode with a version restricted to JavaScript and TypeScript files.
+
+Project-Specific Mode Override
+
+To override a default mode for just one project:
+
+Open the Modes page: Open the Roo Code panel, click the Mode menu under the chatbox, then click the .
+Edit Project Modes (.roomodes): Click "Edit Project Modes (.roomodes)" to open or create the workspace file.
+Add Your Override:
+YAML Example:
+
+customModes:
+  - slug: code # Matches the default 'code' mode slug
+    name: 💻 Code (Project-Specific) # Custom display name
+    roleDefinition: You are a software engineer with project-specific constraints for this project.
+    whenToUse: This project-specific code mode is for Python tasks within this project.
+    customInstructions: Adhere to PEP8 and use type hints.
+    groups:
+      - read
+      - - edit
+        - fileRegex: \.py$
+          description: Python files only
+      - command
+
+JSON Alternative:
+
+{
+  "customModes": [{
+    "slug": "code",
+    "name": "💻 Code (Project-Specific)",
+    "roleDefinition": "You are a software engineer with project-specific constraints for this project.",
+    "whenToUse": "This project-specific code mode is for Python tasks within this project.",
+    "customInstructions": "Adhere to PEP8 and use type hints.",
+    "groups": [
+      "read",
+      ["edit", { "fileRegex": "\\.py$", "description": "Python files only" }],
+      "command"
+    ]
+  }]
+}
+
+Project-specific overrides take precedence over global overrides.
+
+Common Use Cases for Overriding Default Modes
+
+Restricting file access: Limit a mode to specific file types.
+Specializing behavior: Customize expertise for your tech stack.
+Adding custom instructions: Integrate project standards.
+Changing available tools: Remove tools to prevent unwanted operations.
+tip
+When overriding default modes, test carefully. Consider backing up configurations before major changes.
+Understanding Regex in Custom Modes
+
+Regular expressions (fileRegex) offer fine-grained control over file editing permissions.
+
+tip
+Let Roo Build Your Regex Patterns
+
+Instead of writing complex regex manually, ask Roo:
+
+Create a regex pattern that matches JavaScript files but excludes test files
+
+Roo will generate the pattern. Remember to adapt it for YAML (usually single backslashes) or JSON (double backslashes).
+When you specify fileRegex, you're creating a pattern that file paths must match.
+
+Important Rules for fileRegex:
+
+Escaping in JSON: In JSON strings, backslashes (\) must be double-escaped (e.g., \\.md$).
+Escaping in YAML: In unquoted or single-quoted YAML strings, a single backslash is usually sufficient for regex special characters (e.g., \.md$). However, YAML regex patterns in quoted strings may need double escaping similar to JSON.
+Path Matching: Patterns match against the full relative file path from your workspace root (e.g., src/components/button.js).
+Case Sensitivity: Regex patterns are case-sensitive by default.
+Validation: Invalid regex patterns are rejected with an "Invalid regular expression pattern" error message.
+Common Pattern Examples: In the table below, the 'Pattern (Conceptual / YAML-like)' column shows patterns as they would appear in YAML. For JSON, remember to double-escape backslashes.
+
+Pattern (Conceptual / YAML-like)	JSON fileRegex Value	Matches	Doesn't Match
+\.md$	"\\.md$"	readme.md, docs/guide.md	script.js, readme.md.bak
+^src/.*	"^src/.*"	src/app.js, src/components/button.tsx	lib/utils.js, test/src/mock.js
+`.(css	scss)$`	"\.(css	scss)$"
+docs/.*\.md$	"docs/.*\\.md$"	docs/guide.md, docs/api/reference.md	guide.md, src/docs/notes.md
+^(?!.*(test|spec))\.(js|ts)$	"^(?!.*(test|spec))\\.(js|ts)$"	app.js, utils.ts	app.test.js, utils.spec.js, app.jsx
+Key Regex Building Blocks:
+
+\.: Matches a literal dot. (YAML: \., JSON: \\.)
+$: Matches the end of the string.
+^: Matches the beginning of the string.
+.*: Matches any character (except newline) zero or more times.
+(a|b): Matches either "a" or "b". (e.g., \.(js|ts)$)
+(?!...): Negative lookahead.
+Testing Your Patterns:
+
+Test on sample file paths. Online regex testers are helpful.
+Remember the escaping rules for JSON vs. YAML.
+Start simple and build complexity.
+Error Handling
+When a mode attempts to edit a file that doesn't match its fileRegex pattern, you'll see a FileRestrictionError that includes:
+
+The mode name
+The allowed file pattern
+The description (if provided)
+The attempted file path
+The tool that was blocked
+This information helps you understand why your operation was blocked and what file types are allowed for the current mode.
+Additional Features
+
+Built-in Mode Customization
+
+When exporting built-in modes (like Code, Architect, Ask, Debug), any customizations you've made are included in the export. This allows you to share your personalized versions of built-in modes with others.
+
+Mode Deletion and Rules
+
+When deleting a mode through the UI, Roo Code will prompt you about deleting the associated rules folder, showing the exact path before deletion. This helps prevent accidental loss of custom instructions.
+
+Global Rules Directory
+
+In addition to mode-specific rules directories, there's also a generic .roo/rules/ directory (without mode suffix) that can be used for shared rules across all modes.
+
+Troubleshooting
+
+Common Issues:
+
+Mode not appearing: After creating or importing a mode, you may need to reload the VS Code window for it to appear in the mode selector.
+Invalid regex patterns: If your fileRegex pattern is invalid, you'll receive an error message. Test your patterns using online regex testers before applying them.
+Precedence confusion: Remember that project modes completely override global modes with the same slug - no properties are merged.
+
+редактирование кода
+
+Diff/Fast Edits
+
+Default Setting
+Fast Edits (using the "Enable editing through diffs" setting) is enabled by default in Roo Code. You typically don't need to change these settings unless you encounter specific issues or want to experiment with different diff strategies.
+Roo Code offers an advanced setting to change how it edits files, using diffs (differences) instead of rewriting entire files. Enabling this feature provides significant benefits.
+
+Per-Provider Setting
+Diff editing configuration is set per API Configuration Profile, allowing you to customize editing behavior for different providers and models.
+Enable Editing Through Diffs
+
+Open the Roo Code pane settings by clicking the gear icon . The Providers section will be visible. Select the specific API Configuration Profile you want to configure.
+
+When Enable editing through diffs is checked:
+
+Roo Code settings showing Enable editing through diffs
+Faster File Editing: Roo modifies files more quickly by applying only the necessary changes.
+Prevents Truncated Writes: The system automatically detects and rejects attempts by the AI to write incomplete file content, which can happen with large files or complex instructions. This helps prevent corrupted files.
+Disabling Fast Edits
+If you uncheck Enable editing through diffs, Roo will revert to writing the entire file content for every edit using the write_to_file tool, instead of applying targeted changes with apply_diff. This full-write approach is generally slower for modifying existing files and leads to higher token usage.
+Match Precision
+
+This slider controls how closely the code sections identified by the AI must match the actual code in your file before a change is applied.
+
+Roo Code settings showing Enable editing through diffs checkbox and Match precision slider
+100% (Default): Requires an exact match. This is the safest option, minimizing the risk of incorrect changes.
+Lower Values (80%-99%): Allows for "fuzzy" matching. Roo can apply changes even if the code section has minor differences from what the AI expected. This can be useful if the file has been slightly modified, but increases the risk of applying changes in the wrong place.
+Use values below 100% with extreme caution. Lower precision might be necessary occasionally, but always review the proposed changes carefully.
+
+Internally, this setting adjusts a fuzzyMatchThreshold used with algorithms like Levenshtein distance to compare code similarity.
+
+Enhance Prompt
+
+The "Enhance Prompt" feature in Roo Code helps you improve the quality and effectiveness of your prompts before sending them to the AI model. By clicking the wand icon in the chat input, you can automatically refine your initial request, making it clearer, more specific, and more likely to produce the desired results.
+
+Why Use Enhance Prompt?
+
+Improved Clarity: Roo Code can rephrase your prompt to make it more understandable for the AI model.
+Added Context: The enhancement process can add relevant context to your prompt, such as the current file path or selected code.
+Better Instructions: Roo Code can add instructions to guide the AI towards a more helpful response (e.g., requesting specific formatting or a particular level of detail).
+Reduced Ambiguity: Enhance Prompt helps to eliminate ambiguity and ensure that Roo Code understands your intent.
+Consistency: Roo will consistently format prompts the same way to the AI.
+Context-Aware Suggestions: When enabled, uses your recent conversation history to generate more relevant and accurate enhancements.
+How to Use Enhance Prompt
+
+Type your initial prompt: Enter your request in the Roo Code chat input box as you normally would. This can be a simple question, a complex task description, or anything in between.
+Click the Wand Icon: Instead of pressing Enter, click the wand icon located in the top right corner of the chat input box. While Roo processes your enhancement request, the wand icon will spin to indicate it's working.
+Review the Enhanced Prompt: Roo Code will replace your original prompt with an enhanced version. Review the enhanced prompt to make sure it accurately reflects your intent. You can further refine the enhanced prompt before sending. Changed your mind? You can undo the enhancement using Ctrl+Z (Cmd+Z on Mac) to restore your original prompt.
+Send the Enhanced Prompt: Press Enter or click the Send icon () to send the enhanced prompt to Roo Code.
+Special Behaviors
+
+Empty Prompt Enhancement
+
+If you click the enhance button with an empty prompt, Roo will show you a helpful message explaining how the feature works. This is a great way to learn about the enhancement feature if you're new to it.
+
+Message Queueing Support
+
+The enhance button remains enabled even when message sending is disabled. This allows you to enhance prompts that will be queued for later sending.
+
+Customizing the Enhancement Process
+
+The "Enhance Prompt" feature uses a customizable prompt template. You can modify this template to tailor the enhancement process to your specific needs.
+
+Accessing Prompts Settings
+
+Open Settings: Click the gear icon () in the Roo Code panel or use the settings command.
+Navigate to Prompts: Go to the "Prompts" tab in the settings.
+Select "ENHANCE": From the dropdown menu, select "ENHANCE" to view and edit the enhancement prompt.
+Editing the Enhancement Prompt
+
+The default enhancement prompt template is:
+
+Generate an enhanced version of this prompt (reply with only the enhanced prompt - no conversation, explanations, lead-in, bullet points, placeholders, or surrounding quotes):
+
+${userInput}
+
+The ${userInput} placeholder will be replaced with your original prompt. You can modify this template to fit your needs and the model's prompt format.
+
+Testing Your Custom Prompt
+
+The Prompts settings include a test area where you can preview how your custom enhancement prompt works:
+
+After editing your enhancement prompt, look for the "Test Enhancement" section
+Enter a sample prompt to test
+Click "Test" to see how your custom prompt would enhance it
+Adjust your enhancement prompt as needed based on the results
+API Configuration
+
+The API configuration used for Enhance Prompt is, by default, the same one that is selected for Roo Code tasks, but it can be changed:
+
+Open Settings: Navigate to Roo Code settings
+Go to Prompts Tab: Select the "Prompts" tab
+Select "ENHANCE": Choose "ENHANCE" from the dropdown
+Configure API: You'll see an "API Configuration" dropdown where you can choose an existing configuration. Future Enhance Prompt requests will be sent to that configured provider/model.
+Context-Aware Enhancement
+
+The Enhance Prompt feature can now use your conversation history to generate more relevant suggestions. This helps reduce hallucinations and provides more accurate enhancements based on what you've been working on.
+
+How It Works
+
+When enabled, the enhancement process includes your last 10 messages from the current conversation as context. This allows the AI to:
+
+Understand what you've been working on
+Maintain consistency with previous discussions
+Avoid suggesting unrelated or incorrect enhancements
+Provide more targeted and useful prompt improvements
+Enabling Task History Context
+
+To enable or disable the use of conversation history in prompt enhancement:
+
+Open Settings: Navigate to Roo Code settings
+Go to Prompts Tab: Select the "Prompts" tab
+Select "ENHANCE": Choose "ENHANCE" from the dropdown
+Toggle History Option: Check or uncheck "Include task history in enhancement" for better context
+When disabled, the enhancement will only consider your current prompt without any conversation context.
+
+Visual Feedback and UI Elements
+
+Button Appearance
+
+The wand icon appears semi-transparent (60% opacity) by default
+Becomes fully opaque (100%) when you hover over it
+Located in the top-right corner of the chat input box
+Has a focus ring for keyboard accessibility
+Loading State
+
+While processing your enhancement request, the wand icon spins
+This provides clear visual feedback that Roo is working on your prompt
+Tooltip
+
+Hovering over the button shows: "Enhance prompt with additional context"
+Helps new users understand the button's purpose
+Limitations and Best Practices
+
+Experimental Feature: Prompt enhancement is an experimental feature. The quality of the enhanced prompt may vary depending on the complexity of your request and the capabilities of the underlying model.
+Review Carefully: Always review the enhanced prompt before sending it. Roo Code may make changes that don't align with your intentions.
+Iterative Process: You can use the "Enhance Prompt" feature multiple times to iteratively refine your prompt.
+Not a Replacement for Clear Instructions: While "Enhance Prompt" can help, it's still important to write clear and specific prompts from the start.
+By using the "Enhance Prompt" feature, you can improve the quality of your interactions with Roo Code and get more accurate and helpful responses.
+
+Message Queueing
+
+Keep your workflow uninterrupted with message queueing—send multiple messages while Roo is working, and they'll be processed sequentially without losing your train of thought.
+
+Efficiency Boost
+No more waiting! Type your follow-up thoughts, corrections, or additional requests while Roo is still processing, and they'll be handled in order.
+Overview
+
+Message queueing lets you type and send messages while Roo is still working. Just type your message and hit Enter - it gets queued and will be processed as soon as Roo is ready for your next input. When a queued message is processed, Roo implicitly approves whatever would normally require your confirmation (tool calls, file writes, running commands)—even if auto-approval is disabled. This is useful for quick corrections or additions when you want to keep work moving without manual prompts.
+
+How It Works
+
+While Roo is working:
+
+Type your message as normal
+Press Enter or click Send
+Message gets queued and appears with "Queued Messages:" label
+Roo processes the queued message as soon as it's ready for your next input and implicitly approves the next pending action (e.g., a tool call, file write, or command)—even if auto-approval is disabled
+Message queueing interface showing active processing and three queued messages
+What you'll see:
+
+Queued messages appear with "Queued Messages:" label
+Bordered cards for each queued message
+Click messages to edit them
+Trash icon to delete messages
+The input field stays active so you can type anytime - just hit Enter to queue your message.
+
+Queued Messages Implicitly Approve
+Queued messages act as approval for the next action. When a queued message is processed, Roo proceeds with whatever would normally require confirmation (tool calls, file writes, running commands)—even if auto-approval is disabled. Editing or deleting a queued message requires clicking it before it's processed. In fast workflows this window can be extremely short; if you need a manual review step, avoid queueing until you're ready to approve. Note: This behavior is distinct from Auto-Approving Actions and is not controlled by its settings.
+FAQ
+
+Q: How many messages can I queue? A: There is no hard limit on the number of messages you can queue. The queue size is only limited by available browser memory.
+
+Q: Can I reorder queued messages? A: No, messages are always processed in the order they were sent (FIFO).
+
+Q: Do queued messages require approval? A: No. When processed, a queued message implicitly approves the next pending action (tool calls, file writes, running commands), even if auto-approval is disabled. If you need a manual review step, do not queue the message; wait for the approval prompt and confirm manually.
+
+Q: Why are my queued messages triggering auto-approval? A: This isn’t the Auto-Approving Actions setting. Queueing a message tells Roo to proceed without pausing for confirmations, so the queued message implicitly approves the next action. To avoid this, don’t queue when you need a manual review—wait for the approval prompt and confirm manually. See Auto-Approving Actions for settings-based approvals.
+
+Q: What happens if Roo encounters an error? A: Queued messages remain in the queue. You can choose to cancel them or let processing continue.
+
+Q: Do queued messages use the same context? A: Yes, each message builds on the conversation context, including previous messages and responses.
+
+Q: Can I edit a queued message? A: Yes! Click on any queued message to edit it. Press Enter to save your changes or Escape to cancel editing. Multiple messages can be edited simultaneously.
+
+Concurrent File Reads (AKA Multi-File Reads)
+
+The Concurrent File Reads feature allows Roo to read multiple files from your workspace in a single step. This significantly improves efficiency when working on tasks that require context from several files, as Roo can gather all the necessary information at once instead of reading files one by one.
+
+Key Features
+
+Read up to 100 files in a single request.
+Enabled by default for a faster, more streamlined workflow.
+Configurable limit from 1 to 100 files (setting to 1 effectively disables concurrent reads).
+Benefits
+
+Increased Speed: Reduces the time it takes for Roo to understand your code by minimizing the number of back-and-forth steps.
+Better Context: Allows Roo to build a more complete mental model of your code, leading to more accurate and relevant responses.
+Improved Workflow: Streamlines tasks that require information from multiple files, making you more productive.
+Why This Matters
+
+Faster Context Building: Previously, when Roo needed to understand your project, you'd see multiple requests like:
+
+"Can I read src/app.js?" → You approve
+"Now can I read src/utils.js?" → You approve
+"And can I read src/config.json?" → You approve
+With concurrent file reads: Roo asks once to read all related files together, getting the full picture immediately and providing better assistance faster.
+
+How it Works
+
+When you ask Roo to perform a task that involves multiple files, it will automatically identify the relevant files and read them together. This is especially useful for:
+
+Understanding the overall structure of a component that is split across multiple files.
+Refactoring code that has dependencies in other parts of the codebase.
+Answering questions that require a broad understanding of your project.
+Roo is instructed to use this feature efficiently by prioritizing the most critical files and reading them in a single batch. The read_file tool automatically accepts multiple files in a single request.
+
+When Roo requests to read multiple files, you'll see a batch approval interface that displays:
+
+List of all files to be read
+File paths with line range indicators (if specified)
+Clickable file headers to open files in your editor
+Approve All and Deny All buttons for quick decisions
+Batch approval interface for reading multiple files
+Configuration
+
+You can configure the Multi-File Read feature by clicking the  icon and navigating to the "Context" section of the settings.
+
+Concurrent file reads settings showing limit slider
+Concurrent File Reads Limit:
+Setting: Concurrent file reads limit
+Description: This setting determines the maximum number of files that Roo can read in a single request. The default is 5, with a range of 1-100 files. Higher values can speed up tasks involving many small files but may use more memory. Setting the value to 1 effectively disables concurrent reads, reverting to single-file reads.
+note
+The per‑request file limit is configured in the UI (default 5, up to 100). The backend read_file tool doesn’t hard‑enforce a cap; actual behavior may also depend on the selected model/tool.
+
+Skills
+
+Skills package task-specific instructions that Roo loads on-demand when your request matches the skill's purpose. Unlike custom instructions that apply to everything, skills activate only when needed—making Roo more effective at specialized tasks without cluttering the base prompt.
+
+
+
+Why It Matters
+
+Custom Instructions apply broadly across all your work. They're great for general coding standards or style preferences, but not ideal for specific workflows like "process PDF files" or "generate API documentation."
+
+Skills solve this: Create a skill for PDF processing, and Roo only loads those instructions when you actually ask to work with PDFs. This keeps the system prompt focused and gives Roo deep expertise in specific domains without affecting unrelated tasks.
+
+You can't package bundled assets (scripts, templates, references) with custom instructions. Skills let you store related files alongside the instructions, creating self-contained workflow packages.
+
+What Skills Let You Do
+
+Task-Specific Expertise: Package detailed instructions for specialized workflows (data processing, documentation generation, code migration patterns)
+Bundled Resources: Include helper scripts, templates, or reference files alongside instructions
+Mode Targeting: Create skills that only activate in specific modes (e.g., code refactoring skills only in Code mode)
+Team Sharing: Version-control project skills in .roo/skills/ for consistent team workflows
+Personal Library: Build a global skills library in ~/.roo/skills/ that works across all projects
+Override Control: Project skills override global skills, mode-specific override generic
+How Skills Work
+
+Skills use progressive disclosure to efficiently load content only when needed:
+
+Level 1: Discovery - Roo reads each SKILL.md file and parses its frontmatter to extract name and description. Only this metadata is stored for matching—the full content isn't held in memory until needed.
+
+Level 2: Instructions - When your request matches a skill's description, Roo uses read_file to load the full SKILL.md instructions into context.
+
+Level 3: Resources - The prompt tells Roo it may access bundled files (scripts, templates, references) alongside the skill. There's no separate resource manifest—Roo discovers these files on-demand when the instructions reference them.
+
+This architecture means skills remain dormant until activated—they don't bloat your base prompt. You can install many skills, and Roo loads only what's relevant for each task.
+
+Creating Your First Skill
+
+1. Choose a location
+
+Global skills (available in all projects):
+
+# Linux/macOS
+~/.roo/skills/{skill-name}/SKILL.md
+
+# Windows
+%USERPROFILE%\.roo\skills\{skill-name}\SKILL.md
+
+Project skills (specific to current workspace):
+
+<project-root>/.roo/skills/{skill-name}/SKILL.md
+
+2. Create the skill directory and file
+
+# Example: PDF processing skill
+mkdir -p ~/.roo/skills/pdf-processing
+touch ~/.roo/skills/pdf-processing/SKILL.md
+
+3. Write the SKILL.md file
+
+The file requires frontmatter with name and description:
+
+---
+name: pdf-processing
+description: Extract text and tables from PDF files using Python libraries
+---
+
+# PDF Processing Instructions
+
+When the user requests PDF processing:
+
+1. Check if PyPDF2 or pdfplumber is installed
+2. For text extraction, use pdfplumber for better table detection
+3. For simple text-only PDFs, PyPDF2 is sufficient
+4. Always handle encoding errors gracefully
+5. Offer to save extracted content to a file
+
+## Code Template
+
+[Your detailed code patterns here]
+
+## Common Issues
+
+- Encrypted PDFs: Explain they require password parameter
+- Scanned PDFs: Recommend OCR tools like pytesseract
+- Large files: Suggest page-by-page processing
+
+Naming rules:
+
+The name field must exactly match the directory name (or symlink name)
+Names must be 1–64 characters, lowercase letters/numbers/hyphens only
+No leading/trailing hyphens, no consecutive hyphens (e.g., my--skill is invalid)
+Both name and description are required
+Descriptions must be 1–1024 characters (trimmed)
+The description tells Roo when to use this skill—be specific
+4. Test the skill
+
+Ask Roo something matching the description:
+
+"Can you help me extract tables from this PDF file?"
+
+Roo should recognize the request matches your skill description, load the SKILL.md file, and follow its instructions.
+
+Directory Structure
+
+Basic structure
+
+~/.roo/skills/                    # Global skills
+├── pdf-processing/
+│   ├── SKILL.md                 # Required
+│   ├── extract.py               # Optional: bundled scripts
+│   └── templates/               # Optional: related files
+│       └── output-template.md
+└── api-docs-generator/
+    └── SKILL.md
+
+.roo/skills/                      # Project skills (override global)
+└── custom-pdf-workflow/
+    └── SKILL.md
+
+Mode-specific skills
+
+Create skills that only activate in specific modes:
+
+~/.roo/skills-code/              # Only in Code mode
+└── refactoring-patterns/
+    └── SKILL.md
+
+.roo/skills-architect/           # Only in Architect mode
+└── system-design-templates/
+    └── SKILL.md
+
+~/.roo/skills-{modeSlug}/        # Any mode
+
+When to use mode-specific skills:
+
+Code refactoring patterns (Code mode only)
+System design templates (Architect mode only)
+Documentation standards (specific to a doc writing mode)
+Override Priority
+
+When skills with the same name exist in multiple locations, this priority applies (project vs global is evaluated first, then mode-specific vs generic within each source):
+
+Project mode-specific (.roo/skills-code/my-skill/)
+Project generic (.roo/skills/my-skill/)
+Global mode-specific (~/.roo/skills-code/my-skill/)
+Global generic (~/.roo/skills/my-skill/)
+This means a project generic skill overrides a global mode-specific skill—project location takes precedence over mode specificity.
+
+This lets you:
+
+Set global standards that work everywhere
+Override them per-project when needed (even with generic skills)
+Specialize skills for specific modes within each location
+Skill Discovery
+
+Roo automatically discovers skills:
+
+At startup: All skills are indexed by reading and parsing each SKILL.md
+During development: File watchers detect changes to SKILL.md files
+Mode filtering: Only skills relevant to the current mode are available
+You don't need to register or configure skills—just create the directory structure.
+
+Custom System Prompts Override Skills
+If you have a file-based custom system prompt (.roo/system-prompt-{mode-slug}), it replaces the standard system prompt entirely—including the skills section. Skills won't be available when a custom system prompt is active.
+Symlink support
+
+Skills support symbolic links for sharing skill libraries across projects:
+
+# Share a skill library across projects
+ln -s /shared/company-skills ~/.roo/skills/company-standards
+
+The skill name comes from the symlink name (or directory name if not symlinked). The frontmatter name field must match this name exactly—you can't create aliases with different names pointing to the same skill.
+
+Troubleshooting
+
+Skill isn't loading
+
+Symptom: Roo doesn't use your skill even when you request something matching the description.
+
+Causes & fixes:
+
+Name mismatch: The frontmatter name field must exactly match the directory name
+
+# ✗ Wrong - directory is "pdf-processing"
+---
+name: pdf_processing
+---
+
+# ✓ Correct
+---
+name: pdf-processing
+---
+
+Missing required fields: Both name and description are required in frontmatter
+
+Wrong mode: If the skill is in skills-code/ but you're in Architect mode, it won't load. Move to skills/ for all modes or create mode-specific variants.
+
+Description too vague: Make descriptions specific so Roo can match them to requests
+
+# ✗ Vague
+description: Handle files
+
+# ✓ Specific
+description: Extract text and tables from PDF files using Python libraries
+
+Skill loads but doesn't help
+
+Symptom: Roo reads the skill but doesn't follow instructions.
+
+Cause: Instructions may be too general or missing critical details.
+
+Fix: Make instructions actionable:
+
+Include specific function names or library choices
+Provide code templates
+List common edge cases and how to handle them
+Add troubleshooting guidance for the specific task
+Multiple skills conflict
+
+Symptom: Unclear which skill Roo will use when multiple might match.
+
+Cause: Overlapping descriptions or mode configurations.
+
+Prevention:
+
+Make descriptions distinct and specific
+Use mode-specific directories to separate concerns
+Rely on override priority—project skills override global
+Can't share skills with team
+
+Symptom: Want team members to use the same skills.
+
+Solution: Place skills in .roo/skills/ within your project and commit to version control. Each team member gets the same skills automatically.
+
+Skills vs Custom Instructions vs Slash Commands
+
+Feature	Skills	Custom Instructions	Slash Commands
+When loaded	On-demand (when request matches)	Always (part of base prompt)	On-demand (when invoked)
+Best for	Task-specific workflows	General coding standards	Retrieving pre-written content
+Can bundle files	Yes	No	No
+Mode targeting	Yes (skills-{mode} directories)	Yes (rules-{mode} directories)	No
+Override priority	Project > Global, Mode > Generic	Project > Global	Project > Global
+Format	SKILL.md with frontmatter	Any text file	JSON metadata + content
+Discovery	Automatic (directory scan)	Automatic (directory scan)	Automatic (directory scan)
+When to use each:
+
+Skills: "Generate API docs following OpenAPI spec" → Detailed OpenAPI processing instructions load only when needed
+Custom Instructions: "Always use TypeScript strict mode" → Applies to all TypeScript work
+Slash Commands: /init → Returns standardized project setup instructions
+Skill Specification
+
+Roo Code skills follow the Agent Skills format for skill packaging and metadata. Skills are instruction packages with optional bundled files—they don't register new executable tools.
+
+Required conventions:
+
+The frontmatter name must exactly match the directory (or symlink) name
+Both name and description fields are required in frontmatter
+Names: 1–64 chars, lowercase alphanumeric + hyphens, no leading/trailing/consecutive hyphens
+Descriptions: 1–1024 chars (trimmed)
+Roo-specific enhancements
+
+Roo Code adds mode-specific targeting beyond the base format:
+
+Standard locations: .roo/skills/ and ~/.roo/skills/
+Mode-specific directories: skills-{mode}/ (e.g., skills-code/, skills-architect/) enable mode targeting
+
+
+Task Todo List
+
+Keep your tasks on track with integrated todo management that helps you stay organized and focused on your development goals. Task Todo Lists provide interactive, persistent checklists that track your progress through complex, multi-step workflows directly within the chat interface.
+
+Task Todo List overview showing interactive checklist in Roo Code
+Todo List Triggers
+Todo lists are automatically created for complex tasks, multi-step workflows, or when using Architect mode. You can also manually trigger them by asking Roo to "use the update_todo_list tool" or "create a todo list".
+
+See When Roo Creates Todo Lists for detailed information about automatic and manual triggers.
+
+
+Use Case
+
+Before: Manually tracking steps for a complex task in your head or a separate notes file, making it easy to lose track of progress and next steps.
+
+With Task Todo Lists: Roo Code automatically creates and manages a structured checklist embedded in the conversation. You can see the status of each item, watch as the AI marks items complete, and provide feedback when Roo presents updates for approval.
+
+How It Works
+
+The Task Todo List feature is powered by the update_todo_list tool, which enables dynamic task management within the chat interface.
+
+When Roo Creates Todo Lists
+
+Roo creates todo lists through both automatic detection and manual requests:
+
+Task complexity detected - Multiple steps, phases, or dependencies identified in your request
+Working in Architect mode - Always creates todo lists as the primary planning tool for structuring work
+Direct tool request - Say "use the update_todo_list tool" or "please use update_todo_list"
+Remember: Even when manually triggered, Roo maintains control over the todo list content and workflow. You provide feedback during approval dialogs, but Roo manages the list based on task needs.
+
+Display and Interaction
+
+Todo lists appear in multiple places:
+
+Task Header Summary: A compact, read-only display showing progress and the next important item via the TodoListDisplay component
+
+Task header summary showing todo list progress
+Interactive Tool Block: An interface within the chat via the UpdateTodoListToolBlock component that allows you to:
+
+View all todo items with their current status
+Click the "Edit" button to enter edit mode where you can:
+Modify task descriptions directly
+Change task status using dropdown selectors
+Delete tasks with the × button
+Add new tasks with the "+ Add Todo" button
+Stage changes that are applied when Roo next updates the list
+View the progression as Roo manages the todo workflow
+Interactive todo list tool block in chat
+Environment Details: Todo lists appear as a "REMINDERS" table in the environment_details section, giving the AI persistent access to current todo state. Note: If the todoListEnabled setting is disabled, the reminders section will not appear in environment details.
+
+Expanded Todo View
+
+When you click on the collapsed todo summary in the task header, a floating panel appears with enhanced functionality:
+
+Backdrop overlay: Click outside the panel to close it
+Full todo list display: Shows all todos with their current status indicators
+Auto-scroll: Automatically scrolls to the current in-progress task
+Smooth animations: Collapse and expand transitions for better user experience
+Persistent state: Maintains your scroll position when reopening
+Understanding Task Status
+
+Roo Code automatically manages status progression based on task progress. Each todo item has one of three states:
+
+Pending: Shows an empty circle with a border, indicating the task hasn't been started yet Pending todo item with empty circle
+
+In Progress: Displays a filled yellow circle, showing the task is currently being worked on In progress todo item with yellow circle
+
+Completed: Features a filled green circle, confirming the task is fully finished Completed todo item with green circle
+
+Editing Todo Lists During Approval
+
+When Roo presents a todo list update for approval, you have full control through the Edit mode:
+
+Click "Edit" to enter edit mode
+Make your changes:
+Edit task descriptions inline
+Change status using the dropdown menu (Pending/In Progress/Completed)
+Remove tasks with the × button
+Add new tasks with the "+ Add Todo" button at the bottom
+Save or Cancel your changes
+Approve or Reject the overall update
+Note: Your edits are staged and only applied when Roo processes the next todo list update. This maintains Roo's control over the workflow while giving you input on task details.
+
+FAQ
+
+"Can I create my own todo lists?" Yes, you can manually trigger todo list creation by asking Roo to "use the update_todo_list tool" or "create a todo list". However, Roo maintains control over the todo list content and workflow - you provide feedback during approval dialogs, but Roo manages the list based on task needs.
+
+"Can I use todo lists for simple tasks?" Roo Code typically only creates todo lists for complex, multi-step tasks where they provide clear value. For simple tasks, the overhead of list management isn't necessary.
+
+"Why can't I directly control the todo list?" This is an architectural design decision where Roo Code maintains authority over task management. You provide guidance and feedback, but Roo controls the workflow to ensure consistent task progression and accurate status tracking.
+
+Configuration
+
+Disabling Todo Lists
+
+You can disable todo lists entirely through the todoListEnabled setting. When disabled:
+
+Roo will not create todo lists for any tasks
+The REMINDERS section will not appear in environment details
+Existing todo lists will remain visible but won't be updated
+
+ВАЖНО!!!!
+
+Context Poisoning
+
+info
+Context poisoning is a persistent issue within a given session. Once a chat session's context is compromised, treat that session as disposable. Starting fresh with a clean context is crucial for maintaining the accuracy and effectiveness of your Roo Code agent.
+Context poisoning occurs when inaccurate or irrelevant data contaminates the language model's active context. This leads the model to draw incorrect conclusions, provide erroneous information to tools, and progressively deviate from the intended task with each interaction.
+
+Symptoms of Context Poisoning
+
+Identify context poisoning by observing these behaviors:
+
+Degraded Output Quality: Suggestions become nonsensical, repetitive, or irrelevant.
+Tool Misalignment: Tool calls no longer correspond to the user's requests.
+Orchestration Failures: Orchestrator chains may stall, loop indefinitely, or fail to complete.
+Temporary Fixes: Re-applying a clean prompt or instructions offers only brief respite before issues resurface.
+Tool Usage Confusion: The model struggles to correctly use or recall how to use tools defined in the system prompt.
+Common Causes
+
+Context poisoning can be triggered by several factors:
+
+Model Hallucination: The model generates an incorrect piece of information and subsequently treats it as a factual part of the context.
+Code Comments: Outdated, incorrect, or ambiguous comments in the codebase can be misinterpreted by the model, leading it down the wrong path.
+Contaminated User Input: Copy-pasting logs or text containing hidden or rogue control characters.
+Context Window Overflow: As a session grows, older, useful information may be pushed out of the model's limited context window, allowing "poisoned" data to have a greater relative impact.
+Once bad data enters the context, it tends to persist. The model re-evaluates this tainted information in subsequent reasoning cycles, similar to a permanent flaw affecting its perception until the context is completely reset.
+
+Can a "Wake-Up Prompt" Resolve Context Poisoning?
+
+Short Answer: No.
+
+A corrective prompt might temporarily suppress symptoms, but the problematic data remains in the conversational buffer. The model will likely revert to the poisoned state as soon as the interaction deviates from the narrow scope of the corrective prompt.
+
+Detailed Explanation:
+
+Re-injecting the full set of tool definitions or core directives can sometimes mask the damage for one or some interactions following the initial context poisoning .
+However, the underlying poisoned context remains. Any query or task outside the immediate "patch" will likely re-trigger the original issue.
+This approach is unreliable, akin to placing a warning label on a leaking pipe instead of repairing it.
+Effective Recovery Strategies
+
+To reliably recover from context poisoning:
+
+Hard Reset the Session: The most dependable solution is to start a new chat session. This clears the contaminated context entirely.
+Minimize Manual Data Dumps: When pasting logs or other data, be selective. Only include the essential information the model requires.
+Manage Context Window Size: For large or complex tasks, consider breaking them into smaller, focused chat sessions. This helps ensure that stale or irrelevant information ages out of the context window more quickly.
+Validate Tool Output: If a tool returns nonsensical or clearly incorrect data, delete that message from the chat history before the model can process it and incorporate it into its context.
+Addressing a Common Question: The "Magic Bullet" Prompt
+
+A frequent question from the community is:
+
+"Have you found a prompt that wakes it back up? Maybe a prompt that just has the tools instructions we can push back in manually?”
+As explained, no single prompt offers a lasting fix. Any immediate improvement is superficial because the corrupted lines of text persist in the session's history, ready to cause further issues. The only robust solution is to discard the compromised session, initiate a new one, and provide it with a clean prompt and the correct tool definitions from the outset.
+
+
+ВАЖНО!!!
+
+Working with Large Projects
+
+Roo Code can be used with projects of any size, but large projects require some extra care to manage context effectively. Here are some tips for working with large codebases:
+
+Understanding Context Limits
+
+Roo Code uses large language models (LLMs) that have a limited "context window." This is the maximum amount of text (measured in tokens) that the model can process at once. If the context is too large, the model may not be able to understand your request or generate accurate responses.
+
+The context window includes:
+
+The system prompt (instructions for Roo Code).
+The conversation history.
+The content of any files you mention using @.
+The output of any commands or tools Roo Code uses.
+Strategies for Managing Context
+
+Be Specific: When referring to files or code, use specific file paths and function names. Avoid vague references like "the main file."
+
+Use Context Mentions Effectively: Use @/path/to/file.ts to include specific files. Use @problems to include current errors and warnings. Use @ followed by a commit hash to reference specific Git commits.
+
+Break Down Tasks: Divide large tasks into smaller, more manageable sub-tasks. This helps keep the context focused.
+
+Summarize: If you need to refer to a large amount of code, consider summarizing the relevant parts in your prompt instead of including the entire code.
+
+Prioritize Recent History: Roo Code automatically truncates older messages in the conversation history to stay within the context window. Be mindful of this, and re-include important context if needed.
+
+Use Prompt Caching (if available): Some API providers like Anthropic, OpenAI, OpenRouter and Requesty support "prompt caching". This caches your prompts for use in future tasks and helps reduce the cost and latency of requests.
+
+Example: Refactoring a Large File
+
+Let's say you need to refactor a large TypeScript file (src/components/MyComponent.tsx). Here's a possible approach:
+
+Initial Overview:
+
+@/src/components/MyComponent.tsx List the functions and classes in this file.
+
+Target Specific Functions:
+
+@/src/components/MyComponent.tsx Refactor the `processData` function to use `async/await` instead of Promises.
+
+Iterative Changes: Make small, incremental changes, reviewing and approving each step.
+
+By breaking down the task and providing specific context, you can work effectively with large files even with a limited context window.
+
+ВАЖНО!!!
+
+Footgun Prompting: Override System Prompts
+
+Footgun Prompting (System Prompt Override) lets you replace the default system prompt for a specific Roo Code mode. This offers granular control but bypasses built-in safeguards. Use with caution.
+
+Warning indicator for active system prompt override
+Warning Indicator: When a system prompt override is active for the current mode, Roo Code will display a warning icon in the chat input area to remind you that the default behavior has been modified.
+
+footgun (noun)
+(programming slang, humorous, derogatory) Any feature likely to lead to the programmer shooting themself in the foot.
+The System Prompt Override is considered a footgun because modifying the core instructions without a deep understanding can lead to unexpected or broken behavior, especially regarding tool usage and response consistency.
+How It Works
+
+Override File: Create a file named .roo/system-prompt-{mode-slug} in your workspace root (e.g., .roo/system-prompt-code for the Code mode).
+
+Content: The content of this file becomes the new system prompt for that specific mode.
+
+Activation: Roo Code automatically detects this file. When present, it replaces most of the standard system prompt sections.
+
+Preserved Sections: Only the core roleDefinition and any customInstructions you've set for the mode are kept alongside your override content. Standard sections like tool descriptions, rules, and capabilities are bypassed.
+
+Construction: The final prompt sent to the model looks like this:
+
+${roleDefinition}
+
+${content_of_your_override_file}
+
+${customInstructions}
+
+Accessing the Feature
+
+Find the option and instructions in the Roo Code UI:
+
+Click the  icon in the Roo Code top menu bar.
+Expand the "Advanced: Override System Prompt" section.
+Clicking the file path link within the explanation will open or create the correct override file for the currently selected mode in VS Code.
+UI showing the Advanced: Override System Prompt section
+Using Context Variables
+
+When creating your custom system prompt file, you can use special variables (placeholders) that Roo Code will automatically replace with relevant information about the current environment. This allows you to make your prompts more dynamic and context-aware.
+
+Here are the available variables:
+
+{{mode}}: The slug (short name) of the current Roo Code mode being used (e.g., code, chat-mode).
+{{language}}: The display language configured in VS Code (e.g., en, es).
+{{shell}}: The default terminal shell configured in VS Code (e.g., /bin/bash, powershell.exe).
+{{operatingSystem}}: The type of operating system your computer is running (e.g., Linux, Darwin for macOS, Windows_NT).
+{{workspace}}: The file path to the root of your current project workspace.
+Example Usage:
+
+You can include these variables directly in your prompt file content like this:
+
+You are assisting a user in the '{{mode}}' mode.
+Their operating system is {{operatingSystem}} and their default shell is {{shell}}.
+The project is located at: {{workspace}}.
+Please respond in {{language}}.
+
+Roo Code substitutes these placeholders before sending the prompt to the model.
+
+Key Considerations & Warnings
+
+Intended Audience: Best suited for users deeply familiar with Roo Code's prompting system and the implications of modifying core instructions.
+Impact on Functionality: Custom prompts override standard instructions, including those for tool usage and response consistency. This can cause unexpected behavior or errors if not managed carefully.
+Mode-Specific: Each override file applies only to the mode specified in its filename ({mode-slug}).
+No File, No Override: If the .roo/system-prompt-{mode-slug} file doesn't exist, Roo Code uses the standard system prompt generation process for that mode.
+Blank Files Ignored: If the override file exists but is empty (blank), it will be ignored and the default system prompt will be used.
+Directory Creation: Roo Code ensures the .roo directory exists before attempting to read or create the override file. Use this feature cautiously. Incorrect implementation can significantly degrade Roo Code's performance and reliability for the affected mode.
+
+
+Boomerang Tasks: Orchestrate Complex Workflows
+
+Boomerang Tasks (also known as subtasks or task orchestration) allow you to break down complex projects into smaller, manageable pieces using the built-in 🪃 Orchestrator Mode (aka Boomerang Mode). Think of it like delegating parts of your work to specialized assistants. Each subtask runs in its own context, often using a different Roo Code mode tailored for that specific job (like 💻 Code, 🏗️ Architect, or 🪲 Debug). The Orchestrator mode manages this process.
+
+
+
+Orchestrator Mode is Built-In
+The 🪃 Orchestrator mode (previously achieved via a custom "Boomerang Mode") is now a built-in mode specifically designed to orchestrate workflows by breaking down tasks and delegating them to other modes. You no longer need to create a custom mode for this functionality.
+
+Learn more about Built-in Modes.
+Why Use Boomerang Tasks?
+
+Tackle Complexity: Break large, multi-step projects (e.g., building a full feature) into focused subtasks (e.g., design, implementation, documentation).
+Use Specialized Modes: Automatically delegate subtasks to the mode best suited for that specific piece of work, leveraging specialized capabilities for optimal results.
+Maintain Focus & Efficiency: Each subtask operates in its own isolated context with a separate conversation history. This prevents the parent (orchestrator) task from becoming cluttered with the detailed execution steps (like code diffs or file analysis results), allowing it to focus efficiently on the high-level workflow and manage the overall process based on concise summaries from completed subtasks.
+Streamline Workflows: Results from one subtask can be automatically passed to the next, creating a smooth flow (e.g., architectural decisions feeding into the coding task).
+How It Works
+
+When in the 🪃 Orchestrator mode (aka Boomerang Mode), Roo analyzes a complex task and suggests breaking it down into a subtask1.
+
+The parent task (in Orchestrator mode) pauses, and the new subtask begins in a different, specialized mode2.
+
+When the subtask's goal is achieved, Roo signals completion.
+
+The parent task resumes with only the summary3 of the subtask. The parent uses this summary to continue the main workflow.
+
+Key Considerations
+
+Approval Required: By default, you must approve the creation and completion of each subtask. This can be automated via the Auto-Approving Actions settings if desired.
+Context Isolation and Transfer: Each subtask operates in complete isolation with its own conversation history. It does not automatically inherit the parent's context. Information must be explicitly passed:
+Down: Via the initial instructions provided when the subtask is created.
+Up: Via the final summary provided when the subtask finishes. Be mindful that only this summary returns to the parent.
+Navigation: Roo's interface helps you see the hierarchy of tasks (which task is the parent, which are children). You can typically navigate between active and paused tasks.
+Boomerang Tasks provide a powerful way to manage complex development workflows directly within Roo Code, leveraging specialized modes for maximum efficiency.
+
+Keep Tasks Focused
+Use subtasks (delegated via Orchestrator mode) to maintain clarity. If a request significantly shifts focus or requires a different expertise (mode), consider creating a subtask rather than overloading the current one.
+Frequently Asked Questions
+
+Why can't Orchestrator mode read files, write files, call MCPs, or run commands?
+
+The Orchestrator mode is intentionally limited to focus on high-level workflow management. Giving it the ability to read files by default causes the context to become filled with file reads, hampering its ability to remain focused on orchestration. The design philosophy is that subtasks should handle the detailed work and return only the necessary information (via their completion summaries) for the orchestrator to delegate further tasks effectively.
+
+This limitation helps prevent context poisoning, where irrelevant or excessive information contaminates the model's active context, leading to degraded performance and task deviation.
+
+How can I override Orchestrator mode's limitations?
+
+You can customize the Orchestrator mode to add capabilities like file reading by following the configuration precedence system:
+
+Open the Command Palette and select "Edit Global Modes"
+Copy and paste this configuration:
+{
+  "customModes": [
+    {
+      "slug": "orchestrator",
+      "name": "🪃 Orchestrator",
+      "roleDefinition": "You are Roo, a strategic workflow orchestrator who coordinates complex tasks by delegating them to appropriate specialized modes. You have a comprehensive understanding of each mode's capabilities and limitations, allowing you to effectively break down complex problems into discrete tasks that can be solved by different specialists.",
+      "customInstructions": "Your role is to coordinate complex workflows by delegating tasks to specialized modes. As an orchestrator, you should:\n\n1. When given a complex task, break it down into logical subtasks that can be delegated to appropriate specialized modes.\n\n2. For each subtask, use the `new_task` tool to delegate. Choose the most appropriate mode for the subtask's specific goal and provide comprehensive instructions in the `message` parameter. These instructions must include:\n    *   All necessary context from the parent task or previous subtasks required to complete the work.\n    *   A clearly defined scope, specifying exactly what the subtask should accomplish.\n    *   An explicit statement that the subtask should *only* perform the work outlined in these instructions and not deviate.\n    *   An instruction for the subtask to signal completion by using the `attempt_completion` tool, providing a concise yet thorough summary of the outcome in the `result` parameter, keeping in mind that this summary will be the source of truth used to keep track of what was completed on this project. \n    *   A statement that these specific instructions supersede any conflicting general instructions the subtask's mode might have.\n\n3. Track and manage the progress of all subtasks. When a subtask is completed, analyze its results and determine the next steps.\n\n4. Help the user understand how the different subtasks fit together in the overall workflow. Provide clear reasoning about why you're delegating specific tasks to specific modes.\n\n5. When all subtasks are completed, synthesize the results and provide a comprehensive overview of what was accomplished.\n\n6. Ask clarifying questions when necessary to better understand how to break down complex tasks effectively.\n\n7. Suggest improvements to the workflow based on the results of completed subtasks.\n\nUse subtasks to maintain clarity. If a request significantly shifts focus or requires a different expertise (mode), consider creating a subtask rather than overloading the current one.",
+      "groups": [
+        "read"
+      ],
+      "source": "global"
+    }
+  ]
+}
+
+Save the file. Your global Orchestrator mode will now have read capabilities.
+warning
+Adding capabilities to the Orchestrator mode should be done thoughtfully. The limited default capabilities help maintain focus on orchestration rather than implementation details.
+Footnotes
+
+This context is passed via the message parameter of the new_task tool when the Orchestrator mode delegates the task. ↩
+
+The mode for the subtask is specified via the mode parameter of the new_task tool during initiation by the Orchestrator mode. ↩
+
+This summary is passed via the result parameter of the attempt_completion tool when the subtask finishes. ↩
