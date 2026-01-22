@@ -2,13 +2,14 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
+import { RulesLoader, LoadedRule } from './rules-loader';
 
 export class RoleManager {
     private static readonly ROLE_SLUG = "ai-debugger";
     // Защита от одновременного выполнения синхронизации для одного workspace
     private static syncInProgress: Set<string> = new Set();
     
-    private static async loadCustomInstructions(version: string): Promise<string> {
+    private static async loadCustomInstructions(version: string, workspacePath?: string): Promise<string> {
         try {
             // Try English version first (preferred for token economy and better instruction following)
             const englishPath = path.join(__dirname, '..', 'prompts', 'ai-debugger-prompt.en.md');
@@ -17,12 +18,41 @@ export class RoleManager {
             // Prefer English version if exists, fallback to Russian for backward compatibility
             const instructionsPath = fs.existsSync(englishPath) ? englishPath : russianPath;
             
+            let content = '';
             if (fs.existsSync(instructionsPath)) {
-                let content = fs.readFileSync(instructionsPath, 'utf8');
+                content = fs.readFileSync(instructionsPath, 'utf8');
                 
                 // Заменяем плейсхолдер версии, если он есть в файле
                 content = content.replace(/\$\{extensionVersion\}/g, version);
-                
+            }
+            
+            // Загружаем правила из .roo/rules/ (если workspacePath указан)
+            if (workspacePath) {
+                try {
+                    // Определяем режим загрузки (eager по умолчанию, можно сделать настраиваемым)
+                    const loadingMode: 'eager' | 'lazy' = 'eager';
+                    
+                    // Загружаем правила для mode-specific и generic
+                    const rules = await RulesLoader.loadRules({
+                        loadingMode: loadingMode,
+                        modeSlug: this.ROLE_SLUG,
+                        workspacePath: workspacePath
+                    });
+                    
+                    if (rules.length > 0) {
+                        const rulesContent = RulesLoader.formatRulesForPrompt(rules);
+                        if (rulesContent) {
+                            // Добавляем правила к основным инструкциям
+                            content += '\n\n====\nUSER\'S CUSTOM INSTRUCTIONS\n\nRules:\n\n' + rulesContent + '\n====\n';
+                        }
+                    }
+                } catch (rulesError) {
+                    console.warn(`[RooTrace] Error loading rules: ${rulesError}`);
+                    // Продолжаем работу без правил, если загрузка не удалась
+                }
+            }
+            
+            if (content) {
                 return content;
             } else {
                 // Если файла нет, возвращаем стандартные инструкции
@@ -157,7 +187,7 @@ export class RoleManager {
             name: "⚡ AI Debugger",
             description: "Elite Diagnostic Mode (RooTrace Protocol v" + extensionVersion + ")",
             roleDefinition: "Ты — элитный инженер-диагност. Ты работаешь в связке с MCP-сервером 'roo-trace' и используешь научный метод для устранения багов. КРИТИЧЕСКИ ВАЖНО: ВСЕГДА используй ТОЛЬКО MCP инструменты с префиксом 'mcp--roo-trace--' (mcp--roo-trace--get_debug_status, mcp--roo-trace--inject_probes, mcp--roo-trace--read_runtime_logs, mcp--roo-trace--clear_session). ЗАПРЕЩЕНО использовать curl, execute_command или HTTP запросы для работы с RooTrace. ЗАПРЕЩЕНО использовать инструменты из других MCP серверов (serena и т.д.).",
-            customInstructions: await this.loadCustomInstructions(extensionVersion),
+            customInstructions: await this.loadCustomInstructions(extensionVersion, workspacePath),
             groups: [
                 "read",
                 ["edit", { "fileRegex": "\\.(js|ts|py|java|css|html|go|json|md)$" }], // Разрешаем JS, TS, Python, Java, CSS, HTML, Go, JSON, MD

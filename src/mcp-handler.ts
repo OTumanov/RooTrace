@@ -16,6 +16,7 @@ import * as http from 'http';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { getRootraceFilePath } from './rootrace-dir-utils';
+import { RulesLoader } from './rules-loader';
 
 const execAsync = promisify(exec);
 
@@ -354,6 +355,20 @@ export class RooTraceMCPHandler {
               description: 'Опциональный путь к файлу. Если не указан, возвращаются все диагностики workspace.',
             }
           }
+        }
+      },
+      {
+        name: 'mcp--roo-trace--load_rule',
+        description: 'Загружает конкретное правило из .roo/rules/ для lazy loading. Используйте этот инструмент когда нужно загрузить содержимое правила, которое было загружено только как ссылка.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            rulePath: {
+              type: 'string',
+              description: 'Путь к файлу правила (абсолютный или относительный к workspace root)',
+            }
+          },
+          required: ['rulePath']
         }
       }
     ];
@@ -1273,6 +1288,70 @@ export class RooTraceMCPHandler {
                     success: false,
                     error: error instanceof Error ? error.message : String(error),
                     errorCode: 'DIAGNOSTICS_FETCH_FAILED'
+                  })
+                }],
+                isError: true
+              };
+            }
+            break;
+          }
+
+          case 'mcp--roo-trace--load_rule': {
+            const { rulePath } = args as { rulePath: string };
+            
+            try {
+              if (!rulePath) {
+                result = {
+                  content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                      success: false,
+                      error: 'rulePath is required',
+                      errorCode: 'MISSING_RULE_PATH'
+                    })
+                  }],
+                  isError: true
+                };
+                break;
+              }
+
+              // Загружаем правило
+              const content = await RulesLoader.loadSpecificRule(rulePath);
+              
+              if (content === null) {
+                result = {
+                  content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                      success: false,
+                      error: `Rule file not found or empty: ${rulePath}`,
+                      errorCode: 'RULE_NOT_FOUND'
+                    })
+                  }],
+                  isError: true
+                };
+                break;
+              }
+
+              result = {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    success: true,
+                    rulePath: rulePath,
+                    content: content
+                  })
+                }]
+              };
+            } catch (error) {
+              result = {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    success: false,
+                    error: error instanceof Error ? error.message : String(error),
+                    errorCode: 'LOAD_RULE_FAILED',
+                    rulePath: rulePath
                   })
                 }],
                 isError: true
