@@ -776,18 +776,85 @@ CONTEXT:
 - Coordinates: [file:line:function from architect summary]
 - Network: http://${FINAL_HOST}:${ACTUAL_PORT}/
 
+🚨 CRITICALLY IMPORTANT: PROBES MUST BE REAL CODE THAT SENDS HTTP REQUESTS TO SERVER!
+
 TASK:
-1. For each hypothesis H1-H3 (minimum) insert probe at specified location
+1. For each hypothesis H1-H3 (minimum) insert REAL PROBE CODE at specified location
 2. Use apply_diff (Block Rewrite) - NOT inject_probes
 3. Check linter after EACH insertion
 4. Create .patch file after each successful insertion
 5. Use UUID markers for probes
+
+MANDATORY PROBE CODE REQUIREMENTS:
+- ❌ FORBIDDEN: Inserting only comments like "// ROO-TRACE-PROBE H1: ..." - this is WRONG!
+- ✅ MANDATORY: Insert REAL WORKING CODE that sends HTTP POST request to http://${FINAL_HOST}:${ACTUAL_PORT}/
+- ✅ MANDATORY: Probe must actually execute and send data to server, not just be a comment
+
+PROBE CODE EXAMPLES BY LANGUAGE:
+
+For Python files:
+\`\`\`python
+# RooTrace [id: UUID] H1: [hypothesis description]
+try:
+    import http.client, json, socket
+    conn = http.client.HTTPConnection("${FINAL_HOST}", ${ACTUAL_PORT})
+    conn.sock = socket.create_connection(("${FINAL_HOST}", ${ACTUAL_PORT}), timeout=5.0)
+    conn.request("POST", "/", json.dumps({'hypothesisId': 'H1', 'message': '[function name] start', 'state': {'key': value}}), {'Content-Type': 'application/json'})
+    conn.getresponse()
+    conn.close()
+except:
+    pass
+# RooTrace [id: UUID]: end
+\`\`\`
+
+For Go files:
+\`\`\`go
+// RooTrace [id: UUID] H1: [hypothesis description]
+go func() {
+    serverURL := fmt.Sprintf("http://%s:%d/", "${FINAL_HOST}", ${ACTUAL_PORT})
+    jsonData, _ := json.Marshal(map[string]interface{}{
+        "hypothesisId": "H1",
+        "message": "[function name] start",
+        "state": map[string]interface{}{"key": value},
+    })
+    req, _ := http.NewRequest("POST", serverURL, bytes.NewBuffer(jsonData))
+    req.Header.Set("Content-Type", "application/json")
+    client := &http.Client{Timeout: 5 * time.Second}
+    client.Do(req)
+}()
+// RooTrace [id: UUID]: end
+\`\`\`
+
+For JavaScript/TypeScript files:
+\`\`\`javascript
+// RooTrace [id: UUID] H1: [hypothesis description]
+try {
+    fetch(\`http://${FINAL_HOST}:${ACTUAL_PORT}/\`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({hypothesisId: 'H1', message: '[function name] start', state: {key: value}})
+    }).catch(() => {});
+} catch(e) {}
+// RooTrace [id: UUID]: end
+\`\`\`
+
+CRITICAL RULES:
+- Probe MUST send HTTP POST request with JSON payload containing:
+  * hypothesisId: 'H1', 'H2', etc.
+  * message: descriptive message about what is being measured
+  * state: object with relevant variables/values from function context
+- Probe MUST be wrapped in try/except (Python) or go func() (Go) to not break execution
+- Probe MUST use timeout (5.0 for Python, 5*time.Second for Go) for IFC/heavy operations
+- Probe MUST use FINAL_HOST and ACTUAL_PORT values (NOT hardcoded localhost:51234)
+- Probe MUST have UUID marker: [id: UUID] (generate unique UUID for each probe)
+- Probe MUST have end marker: [id: UUID]: end
 
 MANDATORY:
 - Backup before first insertion (git commit OR .bak)
 - Linter check after EACH insertion
 - Create .patch after each successful linter check
 - Use FINAL_HOST and ACTUAL_PORT (NOT localhost:51234)
+- Insert REAL WORKING CODE, NOT just comments!
 
 ON COMPLETION:
 - Use attempt_completion with result parameter
