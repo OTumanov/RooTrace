@@ -781,9 +781,10 @@ CONTEXT:
 TASK:
 1. For each hypothesis H1-H3 (minimum) insert REAL PROBE CODE at specified location
 2. Use apply_diff (Block Rewrite) - NOT inject_probes
-3. Check linter after EACH insertion
-4. Create .patch file after each successful insertion
-5. Use UUID markers for probes
+3. After EACH insertion, check linter using @problems mention (MANDATORY)
+4. If @problems shows errors - fix them immediately, then check @problems again
+5. Create .patch file only after @problems shows no errors
+6. Use UUID markers for probes
 
 MANDATORY PROBE CODE REQUIREMENTS:
 - ❌ FORBIDDEN: Inserting only comments like "// ROO-TRACE-PROBE H1: ..." - this is WRONG!
@@ -851,10 +852,24 @@ CRITICAL RULES:
 
 MANDATORY:
 - Backup before first insertion (git commit OR .bak)
-- Linter check after EACH insertion
+- Linter check after EACH insertion using @problems mention
 - Create .patch after each successful linter check
 - Use FINAL_HOST and ACTUAL_PORT (NOT localhost:51234)
 - Insert REAL WORKING CODE, NOT just comments!
+
+LINTER CHECK PROTOCOL (MANDATORY):
+- After EACH probe insertion, you MUST use @problems mention to check for errors
+- @problems integrates with VSCode's Problems panel and shows all workspace errors and warnings
+- @problems automatically captures diagnostics from language servers, linters, and other diagnostic providers
+- This is MORE RELIABLE than manually running linter commands - it uses VSCode's built-in diagnostic system
+- If @problems shows errors in the file you just edited:
+  * STOP immediately - do NOT proceed to next probe
+  * Fix the errors using apply_diff
+  * Check @problems again until no errors remain
+  * Only then proceed to next probe insertion
+- If @problems shows no errors → proceed to create .patch file
+- DO NOT skip linter check - it's mandatory after EACH insertion
+- DO NOT use manual linter commands (like `pylint`, `golint`, etc.) - use @problems instead
 
 ON COMPLETION:
 - Use attempt_completion with result parameter
