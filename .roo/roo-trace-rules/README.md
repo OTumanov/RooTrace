@@ -70,8 +70,8 @@ load_rule(rulePath="имя-модуля.md")
 ### При первом запуске (после Phase 0.2):
 **ОБЯЗАТЕЛЬНО загрузить РАЗОМ в ОДНОМ сообщении:**
 ```
-use_mcp_tool(server="roo-trace", tool="load_rule", arguments={"rulePath": "00-base-core.md"})
-use_mcp_tool(server="roo-trace", tool="load_rule", arguments={"rulePath": "00-base-advanced.md"})
+load_rule(rulePath="00-base-core.md")
+load_rule(rulePath="00-base-advanced.md")
 ```
 
 **НЕПРАВИЛЬНО:** Загружать модули по одному или в разных сообщениях.

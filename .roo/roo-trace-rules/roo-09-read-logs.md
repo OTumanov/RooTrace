@@ -244,7 +244,7 @@ VERDICT: Баг подтвержден данными из логов
 
 **Для загрузки модулей СКОПИРУЙ КОМАНДЫ БУКВА В БУКВУ (НЕ ИЗМЕНЯЙ ИМЯ ИНСТРУМЕНТА!):**
 
-- **СКОПИРУЙ:** `use_mcp_tool(server="roo-trace", tool="load_rule", arguments={"rulePath": "00-base-advanced.md"})` - Роль оркестратора (входит в объединенный модуль)
+- **СКОПИРУЙ:** `load_rule(rulePath="00-base-advanced.md")` - Роль оркестратора (входит в объединенный модуль)
 - **СКОПИРУЙ:** `load_rule(rulePath="roo-05-hypotheses.md")` - Гипотезы для анализа
 - **СКОПИРУЙ:** `load_rule(rulePath="roo-08-wait.md")` - Phase 5: Ожидание пользователя
 - **СКОПИРУЙ:** `load_rule(rulePath="roo-12-manual-prohibition.md")` - Запрет ручного анализа

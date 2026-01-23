@@ -164,7 +164,7 @@ Phase 0.3 - это приемка и валидация summary от архит�
 - **СКОПИРУЙ:** `load_rule(rulePath="roo-04-preflight.md")` - Phase 0.4: Pre-Flight Check
 - **СКОПИРУЙ:** `load_rule(rulePath="roo-05-hypotheses.md")` - Phase 1: Формулирование гипотез
 - **СКОПИРУЙ:** `load_rule(rulePath="arch-03-format-recon.md")` - Формат вывода для разведки
-- **СКОПИРУЙ:** `use_mcp_tool(server="roo-trace", tool="load_rule", arguments={"rulePath": "00-base-advanced.md"})` - Валидация форматов summary (входит в объединенный модуль)
+- **СКОПИРУЙ:** `load_rule(rulePath="00-base-advanced.md")` - Валидация форматов summary (входит в объединенный модуль)
 - **СКОПИРУЙ:** `load_rule(rulePath="00-help-operations.md")` - Справочник по `attempt_completion`
 
 ---

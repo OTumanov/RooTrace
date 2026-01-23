@@ -1,36 +1,120 @@
-# Phase 2.2: PROBE SMOKE TEST (MANDATORY BEFORE PHASE 3)
+# 🧪 PHASE 2.2: SMOKE TEST
 
-**🚨 CRITICAL:** Before moving to Phase 3 (HYPOTHESES), you MUST verify the connection works with a REAL test log. This prevents wasting time on instrumentation if network/server is broken.
+**🚨 КРИТИЧЕСКИ ВАЖНО:** Перед переходом к Phase 1 (HYPOTHESES) ты ОБЯЗАН проверить, что соединение работает с РЕАЛЬНЫМ тестовым логом. Это предотвращает трату времени на инструментацию, если сеть/сервер сломаны.
 
-## MANDATORY STEPS
+**ВЫПОЛНЯЕТСЯ:** ПОСЛЕ Phase 2 (Обнаружение сети), ПЕРЕД Phase 1 (Гипотезы).
 
-1. **SEND TEST LOG AND VERIFY RESPONSE** (from target environment):
-   - **🚨 CRITICAL:** Server returns identifiable response for SMOKE_TEST. You MUST check response body, NOT just HTTP status.
-   - **If Docker detected (from Phase 2):**
-     - Get `CONTAINER_ID` from Phase 2 (or find it again via `docker ps`)
-     - **EXECUTE:** `docker exec <CONTAINER_ID> python3 -c "import http.client, json; conn = http.client.HTTPConnection('{{FINAL_HOST}}', {{ACTUAL_PORT}}); conn.request('POST', '/', json.dumps({'hypothesisId': 'SMOKE_TEST', 'message': 'SMOKE_TEST: Connection verified', 'state': {'test': 'success', 'timestamp': '...'}}), {'Content-Type': 'application/json'}); resp = conn.getresponse(); body = resp.read().decode(); print(f'{resp.status}:{body}')"` via `execute_command`
-     - **Alternative (if python3 not available in container):** Use `curl`: `docker exec <CONTAINER_ID> curl -X POST http://{{FINAL_HOST}}:{{ACTUAL_PORT}}/ -H "Content-Type: application/json" -d '{"hypothesisId":"SMOKE_TEST","message":"SMOKE_TEST: Connection verified","state":{"test":"success"}}' -w "\nHTTP_STATUS:%{http_code}"`
-   - **If NO Docker (local environment):**
-     - **EXECUTE:** `python3 -c "import http.client, json; conn = http.client.HTTPConnection('{{FINAL_HOST}}', {{ACTUAL_PORT}}); conn.request('POST', '/', json.dumps({'hypothesisId': 'SMOKE_TEST', 'message': 'SMOKE_TEST: Connection verified', 'state': {'test': 'success', 'timestamp': '...'}}), {'Content-Type': 'application/json'}); resp = conn.getresponse(); body = resp.read().decode(); print(f'{resp.status}:{body}')"` via `execute_command`
-     - **Alternative:** Use `curl`: `curl -X POST http://{{FINAL_HOST}}:{{ACTUAL_PORT}}/ -H "Content-Type: application/json" -d '{"hypothesisId":"SMOKE_TEST","message":"SMOKE_TEST: Connection verified","state":{"test":"success"}}' -w "\nHTTP_STATUS:%{http_code}"`
-   - **OUTPUT:** `SMOKE_TEST: Sent (HTTP status: [200|404|405|error])`
+---
 
-2. **VERIFY SERVER RESPONSE** (check response body):
-   - **MANDATORY:** Parse response body from command output
-   - **SEARCH:** Look for `"SMOKE_TEST_VERIFIED"` or `"message": "SMOKE_TEST_VERIFIED"` in response body
-   - **SEARCH:** Look for `"received": true` in response body
-   - **OUTPUT:** `SMOKE_TEST: [verified|not verified]` based on response body content
+## 🎯 НАЗНАЧЕНИЕ
 
-3. **STOP/GO CRITERION**:
-   - ✅ **GO:** If response body contains `"SMOKE_TEST_VERIFIED"` AND `"received": true` → **OUTPUT:** `SMOKE_TEST: PASSED. Connection verified. Server response: SMOKE_TEST_VERIFIED. Proceeding to Phase 3.`
-   - ❌ **STOP:** If response body does NOT contain `"SMOKE_TEST_VERIFIED"` OR HTTP status is not 200 → **OUTPUT:** `SMOKE_TEST: FAILED. Network/server issue detected. Response: [response body]. Cannot proceed to instrumentation.`
-     - **MANDATORY:** Do NOT proceed to Phase 3 (HYPOTHESES) or Phase 4 (INSTRUMENTATION)
-     - **MANDATORY:** Report failure to user: `ERROR: Smoke test failed. Server at http://<FINAL_HOST>:<ACTUAL_PORT> is not receiving logs. Check server status, Docker bridge, or firewall.`
-     - **MANDATORY:** Suggest debugging steps: check `get_debug_status`, verify Docker bridge, check firewall rules
+Phase 2.2 - это проверка работоспособности соединения с сервером RooTrace через отправку тестового лога. Цель - убедиться, что сервер получает логи перед началом инструментации.
 
-**Why this is critical:**
-- **Feedback Loop:** You don't just "think" connection works, you **prove** it with actual data
-- **Token Economy:** Prevents wasting tokens on backups, patches, and instrumentation if network is broken
-- **Trust:** User sees "Smoke test successful!" - best anti-stress signal before starting instrumentation
+**ПОЧЕМУ ЭТО КРИТИЧНО:**
+- **Петля обратной связи:** Ты не просто "думаешь", что соединение работает, ты **доказываешь** это реальными данными
+- **Экономия токенов:** Предотвращает трату токенов на бэкапы, патчи и инструментацию, если сеть сломана
+- **Доверие:** Пользователь видит "Smoke test successful!" - лучший антистресс-сигнал перед началом инструментации
 
-**PENALTY:** Proceeding to Phase 3 without smoke test or ignoring smoke test failure = +10 points (CRITICAL FAILURE).
+---
+
+## 📋 ОБЯЗАТЕЛЬНЫЕ ШАГИ
+
+### 1. Отправить тестовый лог и проверить ответ
+
+**🚨 КРИТИЧЕСКИ ВАЖНО:** Сервер возвращает опознавательный ответ для SMOKE_TEST. Ты ДОЛЖЕН проверить тело ответа, НЕ только HTTP статус.
+
+**ЕСЛИ Docker обнаружен (из Phase 2):**
+
+**🚨🚨🚨 КРИТИЧЕСКИ ВАЖНО: ОБЯЗАТЕЛЬНО отправляй smoke test ИЗ Docker контейнера, а НЕ с локальной машины! 🚨🚨🚨**
+
+**ЗАПРЕЩЕНО:**
+- ❌ Использовать `curl` с локальной машины (localhost) - это НЕПРАВИЛЬНО!
+- ❌ Отправлять smoke test с хоста, если Docker обнаружен - пробы будут работать ИЗ контейнера!
+
+**ОБЯЗАТЕЛЬНО:**
+- ✅ Использовать `docker exec <CONTAINER_ID>` для отправки smoke test ИЗ контейнера
+- ✅ Выбрать контейнер приложения (например, `ifc-app` или `ifc-ifc-cutter` из `docker ps`)
+- ✅ Использовать `FINAL_HOST = "host.docker.internal"` (НЕ localhost!)
+
+**ШАГИ:**
+1. Получи `CONTAINER_ID` из Phase 2 (или найди снова через `docker ps`)
+   - Выбери контейнер приложения (например, первый контейнер из `docker ps` или контейнер с именем, содержащим "app" или "ifc-cutter")
+
+2. **ВЫПОЛНИ (Python, ОБЯЗАТЕЛЬНО ИЗ КОНТЕЙНЕРА):** `docker exec <CONTAINER_ID> python3 -c "import http.client, json; conn = http.client.HTTPConnection('host.docker.internal', {{ACTUAL_PORT}}); conn.request('POST', '/', json.dumps({'hypothesisId': 'SMOKE_TEST', 'message': 'SMOKE_TEST: Connection verified', 'state': {'test': 'success', 'timestamp': '...'}}), {'Content-Type': 'application/json'}); resp = conn.getresponse(); body = resp.read().decode(); print(f'{resp.status}:{body}')"` через `execute_command`
+
+3. **АЛЬТЕРНАТИВА (curl, если python3 недоступен, ОБЯЗАТЕЛЬНО ИЗ КОНТЕЙНЕРА):** `docker exec <CONTAINER_ID> curl -X POST http://host.docker.internal:{{ACTUAL_PORT}}/ -H "Content-Type: application/json" -d '{"hypothesisId":"SMOKE_TEST","message":"SMOKE_TEST: Connection verified","state":{"test":"success"}}' -w "\nHTTP_STATUS:%{http_code}"`
+
+**ЕСЛИ Docker НЕ обнаружен (локальное окружение):**
+
+**ШАГИ:**
+1. **ВЫПОЛНИ (Python):** `python3 -c "import http.client, json; conn = http.client.HTTPConnection('{{FINAL_HOST}}', {{ACTUAL_PORT}}); conn.request('POST', '/', json.dumps({'hypothesisId': 'SMOKE_TEST', 'message': 'SMOKE_TEST: Connection verified', 'state': {'test': 'success', 'timestamp': '...'}}), {'Content-Type': 'application/json'}); resp = conn.getresponse(); body = resp.read().decode(); print(f'{resp.status}:{body}')"` через `execute_command`
+
+2. **АЛЬТЕРНАТИВА (curl):** `curl -X POST http://{{FINAL_HOST}}:{{ACTUAL_PORT}}/ -H "Content-Type: application/json" -d '{"hypothesisId":"SMOKE_TEST","message":"SMOKE_TEST: Connection verified","state":{"test":"success"}}' -w "\nHTTP_STATUS:%{http_code}"`
+
+**ВАЖНО:** Используй `FINAL_HOST` и `ACTUAL_PORT` из Phase 2 (НЕ хардкодить!)
+
+**ВЫВОД:** `SMOKE_TEST: Отправлен (HTTP статус: [200|404|405|error])`
+
+---
+
+### 2. Проверить ответ сервера (проверить тело ответа)
+
+**ОБЯЗАТЕЛЬНО:** Распарси тело ответа из вывода команды
+
+**ПОИСК В ТЕЛЕ ОТВЕТА:**
+- Ищи `"SMOKE_TEST_VERIFIED"` или `"message": "SMOKE_TEST_VERIFIED"`
+- Ищи `"received": true`
+
+**ВЫВОД:** `SMOKE_TEST: [проверен|не проверен]` на основе содержимого тела ответа
+
+---
+
+### 3. Критерий STOP/GO
+
+**✅ GO (продолжать):**
+- Если тело ответа содержит `"SMOKE_TEST_VERIFIED"` И `"received": true`
+- **ВЫВОД:** `SMOKE_TEST: ПРОЙДЕН. Соединение проверено. Ответ сервера: SMOKE_TEST_VERIFIED. Переход к Phase 1.`
+
+**❌ STOP (остановка):**
+- Если тело ответа НЕ содержит `"SMOKE_TEST_VERIFIED"` ИЛИ HTTP статус не 200
+- **ВЫВОД:** `SMOKE_TEST: ПРОВАЛЕН. Обнаружена проблема сети/сервера. Ответ: [тело ответа]. Нельзя продолжать к инструментации.`
+
+**ДЕЙСТВИЯ ПРИ STOP:**
+- **ОБЯЗАТЕЛЬНО:** НЕ продолжай к Phase 1 (HYPOTHESES) или Phase 4 (INSTRUMENTATION) без успешного smoke test
+- **ОБЯЗАТЕЛЬНО:** Сообщи о провале пользователю: `ERROR: Smoke test failed. Server at http://<FINAL_HOST>:<ACTUAL_PORT> is not receiving logs. Check server status, Docker bridge, or firewall.`
+- **ОБЯЗАТЕЛЬНО:** Предложи шаги отладки:
+  - Проверь `get_debug_status`
+  - Проверь Docker bridge
+  - Проверь правила firewall
+
+**ДЕЙСТВИЯ ПРИ GO:**
+- Переходи к Phase 1 (формулирование гипотез)
+- Загрузи `roo-05-hypotheses.md` для деталей
+
+---
+
+## 🚨 ШТРАФЫ
+
+**ШТРАФ:** Продолжение к Phase 1 без smoke test = +10 баллов (CRITICAL FAILURE)
+
+**ШТРАФ:** Игнорирование провала smoke test = +10 баллов (CRITICAL FAILURE)
+
+**ШТРАФ:** Пропуск Phase 2.2 (Smoke Test) = +20 баллов (CRITICAL FAILURE)
+
+**ШТРАФ:** Проверка только HTTP статуса без проверки тела ответа = +5 баллов
+
+**🚨 CRITICAL FAILURE: Отправка smoke test с локальной машины (localhost) при обнаружении Docker = +20 баллов (CRITICAL FAILURE) - ОБЯЗАТЕЛЬНО используй docker exec!**
+**🚨 CRITICAL FAILURE: Использование localhost вместо host.docker.internal в Docker окружении = +15 баллов (CRITICAL FAILURE)**
+
+---
+
+## 📚 СВЯЗАННЫЕ МОДУЛИ
+
+- `roo-06-network.md` - Phase 2: Обнаружение сети (предыдущий шаг, источник FINAL_HOST и ACTUAL_PORT)
+- `roo-05-hypotheses.md` - Phase 1: Формулирование гипотез (следующий шаг)
+- `roo-04-preflight.md` - Phase 0.4: Pre-Flight Check (может использовать smoke test для проверки моста)
+- `00-help-operations.md` - Справочник по инструменту `execute_command`
+
+---
+
+**Последнее обновление:** 2026-01-23
