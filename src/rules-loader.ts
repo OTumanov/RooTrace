@@ -184,11 +184,18 @@ export class RulesLoader {
      */
     private static isCriticalRule(filePath: string, content: string | null): boolean {
         const fileName = path.basename(filePath).toLowerCase();
+        
+        // КРИТИЧЕСКИ ВАЖНО: Базовые модули (00-base-*.md, roo-00-role.md) НЕ являются critical
+        // Они должны загружаться лениво через mcp--roo-trace--load_rule
+        if (fileName.startsWith('00-base-') || fileName === 'roo-00-role.md') {
+            return false;
+        }
+        
         // Критичные правила: critical.md, required.md, mandatory.md
         if (fileName.includes('critical') || fileName.includes('required') || fileName.includes('mandatory')) {
             return true;
         }
-        // Проверяем содержимое на наличие маркера
+        // Проверяем содержимое на наличие маркера (только для НЕ базовых модулей)
         if (content && (content.includes('critical: true') || content.includes('CRITICAL') || content.includes('MANDATORY'))) {
             return true;
         }
@@ -374,21 +381,96 @@ export class RulesLoader {
     }
 
     /**
+     * Разрешает путь к правилу, поддерживая различные форматы:
+     * - Абсолютный путь: используется как есть (если файл существует)
+     * - Относительный путь от workspace root: `.roo/rules-ai-debugger/module.md`
+     * - Имя файла: `module.md` → ищется в `.roo/rules-ai-debugger/`
+     * - Путь с префиксом: `rules-ai-debugger/module.md` → разрешается относительно workspace root
+     * 
+     * БЕЗОПАСНОСТЬ: Разрешает пути ТОЛЬКО внутри директорий .roo/rules* для предотвращения чтения произвольных файлов workspace.
+     * Произвольные относительные пути (например, "src/index.ts") будут отклонены.
+     */
+    private static resolveRulePath(rulePath: string): string | null {
+        // Если путь абсолютный - используем как есть
+        if (path.isAbsolute(rulePath)) {
+            if (fs.existsSync(rulePath)) {
+                return rulePath;
+            }
+            return null;
+        }
+
+        const workspaceRoot = this.getWorkspaceRoot();
+        if (!workspaceRoot) {
+            return null;
+        }
+
+        // Нормализуем путь (убираем лишние слэши, точки)
+        const normalizedPath = rulePath.replace(/^\.\//, '').replace(/\/+/g, '/');
+
+        // Вариант 1: Путь уже содержит .roo/roo-trace-rules/ или .roo/rules-ai-debugger/ (для обратной совместимости)
+        if (normalizedPath.includes('.roo/roo-trace-rules/') || normalizedPath.includes('roo-trace-rules/') ||
+            normalizedPath.includes('.roo/rules-ai-debugger/') || normalizedPath.includes('rules-ai-debugger/')) {
+            const fullPath = path.join(workspaceRoot, normalizedPath);
+            if (fs.existsSync(fullPath)) {
+                return fullPath;
+            }
+        }
+
+        // Вариант 2: Путь начинается с roo-trace-rules/ или rules-ai-debugger/ (без .roo/)
+        if (normalizedPath.startsWith('roo-trace-rules/') || normalizedPath.startsWith('rules-ai-debugger/')) {
+            const fullPath = path.join(workspaceRoot, '.roo', normalizedPath);
+            if (fs.existsSync(fullPath)) {
+                return fullPath;
+            }
+        }
+
+        // Вариант 3: Просто имя файла - ищем в .roo/roo-trace-rules/ (приоритет) или .roo/rules-ai-debugger/ (fallback)
+        const rooTraceRulesPath = path.join(workspaceRoot, '.roo', 'roo-trace-rules', normalizedPath);
+        if (fs.existsSync(rooTraceRulesPath)) {
+            return rooTraceRulesPath;
+        }
+        // Fallback для обратной совместимости
+        const rulesAiDebuggerPath = path.join(workspaceRoot, '.roo', 'rules-ai-debugger', normalizedPath);
+        if (fs.existsSync(rulesAiDebuggerPath)) {
+            return rulesAiDebuggerPath;
+        }
+
+        // Вариант 4: Относительный путь от workspace root - ТОЛЬКО если начинается с .roo/rules
+        // БЕЗОПАСНОСТЬ: Ограничиваем белым списком директорий .roo/rules* для предотвращения чтения произвольных файлов
+        if (normalizedPath.startsWith('.roo/rules') || normalizedPath.startsWith('rules-')) {
+            const relativePath = path.join(workspaceRoot, normalizedPath);
+            if (fs.existsSync(relativePath)) {
+                return relativePath;
+            }
+        }
+
+        // Если ничего не найдено - возвращаем null
+        return null;
+    }
+
+    /**
      * Загружает конкретное правило по пути (для lazy loading)
      */
     static async loadSpecificRule(rulePath: string): Promise<string | null> {
         const cache = RulesCache.getInstance();
         
-        // Проверяем кэш
-        const cached = cache.getRule(rulePath);
+        // Разрешаем путь к файлу правила
+        const resolvedPath = this.resolveRulePath(rulePath);
+        if (!resolvedPath) {
+            console.warn(`[RulesLoader] Cannot resolve rule path: ${rulePath}`);
+            return null;
+        }
+        
+        // Проверяем кэш по разрешенному пути
+        const cached = cache.getRule(resolvedPath);
         if (cached && cached.content) {
             return cached.content;
         }
 
         // Загружаем из файла
-        const content = this.readRuleFile(rulePath);
+        const content = this.readRuleFile(resolvedPath);
         if (content) {
-            await cache.loadRuleContent(rulePath, content);
+            await cache.loadRuleContent(resolvedPath, content);
             return content;
         }
 

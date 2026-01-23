@@ -13,29 +13,21 @@ export class RoleManager {
     
     private static async loadCustomInstructions(version: string, workspacePath?: string): Promise<string> {
         try {
-            // МИНИМАЛЬНЫЙ БАЗОВЫЙ ПРОМПТ - используем lazy loading модулей
-            // Вместо большого промпта загружаем только базовые модули и ссылки на остальные
+            // МИНИМАЛЬНЫЙ БАЗОВЫЙ ПРОМПТ - используем ПОЛНОСТЬЮ ленивую загрузку модулей
+            // ВСЕ модули (включая базовые) загружаются по требованию через mcp--roo-trace--load_rule
             let content = `# ⚡ AI DEBUGGER: MODULAR MODE (v${version})
 
 ## 🧩 LAZY LOADING SYSTEM
 
-**КРИТИЧЕСКИ ВАЖНО:** Ты работаешь в модульной системе. Основные инструкции разбиты на модули в \`.roo/rules-ai-debugger/\`.
+**КРИТИЧЕСКИ ВАЖНО:** Ты работаешь в модульной системе с ПОЛНОСТЬЮ ленивой загрузкой. ВСЕ инструкции разбиты на модули в \`.roo/roo-trace-rules/\` и загружаются по требованию.
 
-**Базовые модули загружены ниже. Для остальных используй \`mcp--roo-trace--load_rule\`:**
+**🚨 ВАЖНО:** Базовые модули (language, output, error-handling, role, validator) НЕ загружены в этот system prompt. Ты ДОЛЖЕН загрузить их через \`mcp--roo-trace--load_rule\` при первом запуске или когда они нужны.
 
-- **Phase 0 (Input Filter):** \`roo-00-input-filter.md\`
-- **Phase 0.1 (TODO List):** \`roo-01-todo-list.md\`
-- **Phase 0.2 (Delegation):** \`roo-02-delegate-recon.md\`
-- **Phase 0.3 (Receive Architect):** \`roo-03-receive-architect.md\`
-- **Phase 2 (Network Discovery):** \`roo-06-network.md\`
-- **Phase 4 (Pre-Flight):** \`roo-04-preflight.md\`
-- **Phase 5 (Hypotheses):** \`roo-05-hypotheses.md\`
-- **Phase 6 (Read Logs):** \`roo-09-read-logs.md\`
-- **Phase 7 (Cycle Management):** \`roo-10-cycle-manage.md\`
-- **Phase 8 (Cleanup):** \`roo-11-cleanup.md\`
+**Для загрузки модулей используй:**
+\`mcp--roo-trace--load_rule(rulePath=".roo/roo-trace-rules/имя-модуля.md")\`
 
-**Для кодера (при делегировании):** \`code-00-role.md\`, \`code-01-probe-insertion.md\`, и т.д.
-**Для архитектора (при делегировании):** \`arch-00-role.md\`, \`arch-01-reconnaissance.md\`, и т.д.
+Или просто имя файла:
+\`mcp--roo-trace--load_rule(rulePath="00-base-language.md")\`
 
 **🛡️ SAFETY FIRST:** Если тебе не хватает знаний для текущей фазы, используй:
 \`mcp--roo-trace--load_rule(rulePath="roo-XX-phase-name.md")\`
@@ -44,34 +36,10 @@ export class RoleManager {
 
 `;
 
-            // Загружаем только базовые модули (eager loading)
+            // Базовые модули НЕ загружаются eagerly - они загружаются по требованию через mcp--roo-trace--load_rule
+            // См. секцию "AVAILABLE MODULES" ниже для списка всех модулей
             if (workspacePath) {
                 try {
-                    // Загружаем только критичные базовые модули
-                    const baseModules = [
-                        '00-base-language.md',
-                        '00-base-output.md',
-                        '00-base-error-handling.md',
-                        'roo-00-role.md',
-                        '00-formats-validator.md' // Валидация форматов
-                    ];
-                    
-                    // Загружаем базовые модули напрямую из файлов
-                    const rulesDir = path.join(workspacePath, '.roo', 'rules-ai-debugger');
-                    for (const moduleName of baseModules) {
-                        try {
-                            const modulePath = path.join(rulesDir, moduleName);
-                            if (fs.existsSync(modulePath)) {
-                                const moduleContent = fs.readFileSync(modulePath, 'utf8');
-                                if (moduleContent) {
-                                    content += `\n\n## === # ${moduleName} ===\n${moduleContent}\n`;
-                                }
-                            }
-                        } catch (moduleError) {
-                            console.warn(`[RooTrace] Failed to load base module ${moduleName}: ${moduleError}`);
-                        }
-                    }
-                    
                     // Добавляем информацию о доступных модулях (lazy loading)
                     content += `\n\n## 📚 AVAILABLE MODULES (Load on demand)
 
@@ -116,12 +84,22 @@ Use \`mcp--roo-trace--load_rule(rulePath="module-name.md")\` to load specific mo
 - \`arch-03-format-recon.md\` - Format reconnaissance
 - \`arch-04-format-fix.md\` - Format fixing
 
-**Base Modules:**
-- \`00-base-language.md\` - Language protocol (already loaded)
-- \`00-base-output.md\` - Output rules (already loaded)
-- \`00-base-error-handling.md\` - Error handling (already loaded)
+**Base Modules (Load on demand - recommended to load at startup):**
+- \`00-base-language.md\` - Language protocol (STRICT: response language rules)
+- \`00-base-output.md\` - Output rules (SILENT MODE: 90% tools, 10% status)
+- \`00-base-error-handling.md\` - Error handling protocol
 - \`00-base-penalties.md\` - Penalty system
-- \`00-formats-validator.md\` - Format validation (already loaded)
+- \`00-formats-validator.md\` - Format validation for summaries
+- \`roo-00-role.md\` - RooTrace Orchestrator role definition
+
+**🛡️ STARTUP PROTOCOL:** При первом запуске сессии рекомендуется загрузить базовые модули:
+1. \`mcp--roo-trace--load_rule(rulePath=".roo/roo-trace-rules/00-base-language.md")\`
+2. \`mcp--roo-trace--load_rule(rulePath=".roo/roo-trace-rules/00-base-output.md")\`
+3. \`mcp--roo-trace--load_rule(rulePath=".roo/roo-trace-rules/00-base-error-handling.md")\`
+4. \`mcp--roo-trace--load_rule(rulePath=".roo/roo-trace-rules/roo-00-role.md")\`
+5. \`mcp--roo-trace--load_rule(rulePath=".roo/roo-trace-rules/00-formats-validator.md")\`
+
+Эти модули содержат критически важные инструкции, которые должны быть загружены для корректной работы.
 
 `;
 
@@ -145,16 +123,17 @@ Use \`mcp--roo-trace--load_rule(rulePath="module-name.md")\` to load specific mo
                     }
 
                     // Загружаем пользовательские правила из .roo/rules/ (если есть)
+                    // КРИТИЧЕСКИ ВАЖНО: НЕ загружаем правила из .roo/roo-trace-rules/ - они загружаются лениво через mcp--roo-trace--load_rule
                     try {
                         const userRules = await RulesLoader.loadRules({
                             loadingMode: 'lazy', // Пользовательские правила тоже lazy
-                            modeSlug: this.ROLE_SLUG,
+                            modeSlug: undefined, // НЕ загружаем mode-specific правила (roo-trace-rules) - они ленивые
                             workspacePath: workspacePath
                         });
                         
-                        // Фильтруем только пользовательские правила (не из rules-ai-debugger)
+                        // Фильтруем только пользовательские правила (не из roo-trace-rules)
                         const customRules = userRules.filter(rule => 
-                            !rule.path.includes('rules-ai-debugger') &&
+                            !rule.path.includes('roo-trace-rules') &&
                             !rule.path.includes('reasoning-techniques.md') // Исключаем reasoning-techniques.md, он уже обработан
                         );
                         
@@ -181,7 +160,15 @@ Use \`mcp--roo-trace--load_rule(rulePath="module-name.md")\` to load specific mo
 
 ## 🧩 LAZY LOADING SYSTEM
 
-**КРИТИЧЕСКИ ВАЖНО:** Ты работаешь в модульной системе. Используй \`mcp--roo-trace--load_rule\` для загрузки модулей из \`.roo/rules-ai-debugger/\`.
+**КРИТИЧЕСКИ ВАЖНО:** Ты работаешь в модульной системе с ПОЛНОСТЬЮ ленивой загрузкой. ВСЕ инструкции разбиты на модули в \`.roo/roo-trace-rules/\` и загружаются по требованию.
+
+**🚨 ВАЖНО:** Базовые модули (language, output, error-handling, role, validator) НЕ загружены в этот system prompt. Ты ДОЛЖЕН загрузить их через \`mcp--roo-trace--load_rule\` при первом запуске или когда они нужны.
+
+**Для загрузки модулей используй:**
+\`mcp--roo-trace--load_rule(rulePath=".roo/roo-trace-rules/имя-модуля.md")\`
+
+Или просто имя файла:
+\`mcp--roo-trace--load_rule(rulePath="00-base-language.md")\`
 
 **🛡️ SAFETY FIRST:** Если тебе не хватает знаний для текущей фазы, используй:
 \`mcp--roo-trace--load_rule(rulePath="roo-XX-phase-name.md")\`
@@ -195,7 +182,7 @@ Use \`mcp--roo-trace--load_rule(rulePath="module-name.md")\` to load specific mo
     private static async loadReasoningConfig(workspacePath: string): Promise<Partial<ReasoningConfig>> {
         const possiblePaths = [
             path.join(workspacePath, '.roo', 'rules', 'reasoning-techniques.md'),
-            path.join(workspacePath, '.roo', 'rules-ai-debugger', 'reasoning-techniques.md'),
+            path.join(workspacePath, '.roo', 'roo-trace-rules', 'reasoning-techniques.md'),
             path.join(os.homedir(), '.roo', 'rules', 'reasoning-techniques.md')
         ];
 
@@ -301,7 +288,7 @@ Use \`mcp--roo-trace--load_rule(rulePath="module-name.md")\` to load specific mo
             slug: this.ROLE_SLUG,
             name: "⚡ AI Debugger",
             description: "Elite Diagnostic Mode (RooTrace Protocol v" + extensionVersion + ")",
-            roleDefinition: "Ты — элитный инженер-диагност. Ты работаешь в связке с MCP-сервером 'roo-trace' и используешь научный метод для устранения багов. КРИТИЧЕСКИ ВАЖНО: ВСЕГДА используй ТОЛЬКО MCP инструменты с префиксом 'mcp--roo-trace--' (mcp--roo-trace--get_debug_status, mcp--roo-trace--inject_probes, mcp--roo-trace--read_runtime_logs, mcp--roo-trace--clear_session, mcp--roo-trace--load_rule). ЗАПРЕЩЕНО использовать curl, execute_command или HTTP запросы для работы с RooTrace. ЗАПРЕЩЕНО использовать инструменты из других MCP серверов (serena и т.д.). 🛡️ SAFETY FIRST: Если ты чувствуешь, что тебе не хватает конкретных знаний для текущей фазы (например, Probe Insertion или Log Analysis), используй mcp--roo-trace--load_rule для загрузки соответствующего модуля из .roo/rules/.",
+            roleDefinition: "Ты — элитный инженер-диагност. Ты работаешь в связке с MCP-сервером 'roo-trace' и используешь научный метод для устранения багов. КРИТИЧЕСКИ ВАЖНО: ВСЕГДА используй ТОЛЬКО MCP инструменты с префиксом 'mcp--roo-trace--' (mcp--roo-trace--get_debug_status, mcp--roo-trace--inject_probes, mcp--roo-trace--read_runtime_logs, mcp--roo-trace--clear_session, mcp--roo-trace--load_rule). ЗАПРЕЩЕНО использовать curl, execute_command или HTTP запросы для работы с RooTrace. ЗАПРЕЩЕНО использовать инструменты из других MCP серверов (serena и т.д.). 🛡️ SAFETY FIRST: Если ты чувствуешь, что тебе не хватает конкретных знаний для текущей фазы (например, Probe Insertion или Log Analysis), используй mcp--roo-trace--load_rule для загрузки соответствующего модуля из .roo/roo-trace-rules/.",
             customInstructions: await this.loadCustomInstructions(extensionVersion, workspacePath),
             groups: [
                 "read",
@@ -396,11 +383,11 @@ Use \`mcp--roo-trace--load_rule(rulePath="module-name.md")\` to load specific mo
             // Записываем файл атомарно
             // ВАЖНО: Этот файл автогенерируется расширением RooTrace
             // НЕ РЕДАКТИРУЙТЕ .roomodes вручную! Все инструкции загружаются через модульную систему lazy loading
-            // Модули находятся в .roo/rules-ai-debugger/ и загружаются по требованию через mcp--roo-trace--load_rule
+            // Модули находятся в .roo/roo-trace-rules/ и загружаются по требованию через mcp--roo-trace--load_rule
             const yamlContent = yaml.dump(config, { indent: 2 });
             const headerComment = `# ⚠️ АВТОГЕНЕРИРУЕМЫЙ ФАЙЛ - НЕ РЕДАКТИРУЙТЕ ВРУЧНУЮ!
 # Этот файл создается автоматически расширением RooTrace
-# Все инструкции загружаются через модульную систему lazy loading из .roo/rules-ai-debugger/
+# Все инструкции загружаются через модульную систему lazy loading из .roo/roo-trace-rules/
 # Модули загружаются по требованию через mcp--roo-trace--load_rule
 
 `;

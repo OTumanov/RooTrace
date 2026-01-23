@@ -4,7 +4,9 @@ import {
   InitializeRequestSchema,
   ListToolsRequestSchema,
   CallToolRequestSchema,
-  CallToolResult
+  CallToolResult,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema
 } from '@modelcontextprotocol/sdk/types.js';
 import { injectProbe, getAllProbes, removeAllProbesFromFile, getServerUrl } from './code-injector';
 import { SharedLogStorage, RuntimeLog, Hypothesis } from './shared-log-storage';
@@ -108,6 +110,13 @@ export class RooTraceMCPHandler {
   private isPythonFile(filePath: string): boolean {
     const ext = path.extname(filePath).toLowerCase();
     return ext === '.py' || ext === '.pyw' || ext === '.pyi';
+  }
+
+  /**
+   * Нормализует путь файла, удаляя символ @ в начале (формат @/path/to/file из Roo Code mentions)
+   */
+  private normalizeFilePath(filePath: string): string {
+    return filePath.startsWith('@') ? filePath.substring(1) : filePath;
   }
 
   /**
@@ -226,7 +235,7 @@ export class RooTraceMCPHandler {
     const tools = [
       {
         name: 'read_runtime_logs',
-        description: 'Получает логи отладочной сессии RooTrace',
+        description: '[Read Group] Получает логи отладочной сессии RooTrace для анализа выполнения кода с пробами. Требует явного одобрения пользователя через кнопку на дашборде (безопасность). Используйте после выполнения кода с инъектированными пробами для получения runtime данных. Паттерн использования: inject_probes → выполнение кода → read_runtime_logs → анализ → гипотезы.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -239,7 +248,7 @@ export class RooTraceMCPHandler {
       },
       {
         name: 'clear_logs',
-        description: 'Очищает ТОЛЬКО логи (без удаления проб/гипотез). Аналог кнопки очистки логов на дашборде.',
+        description: '[Workflow Group] Очищает ТОЛЬКО логи (без удаления проб/гипотез). Аналог кнопки очистки логов на дашборде. Не изменяет файлы, только очищает внутреннее хранилище логов. Используйте для очистки старых логов перед началом нового цикла отладки. Безопасная операция - не влияет на код или пробы.',
         inputSchema: {
           type: 'object',
           properties: {}
@@ -247,7 +256,7 @@ export class RooTraceMCPHandler {
       },
       {
         name: 'get_debug_status',
-        description: 'Возвращает статус сервера (активен/не активен), список активных гипотез и текущую сессию',
+        description: '[Read Group] Возвращает статус сервера (активен/не активен), список активных гипотез и текущую сессию. Используйте для проверки состояния отладочной сессии перед началом работы или для получения контекста текущей отладки. Безопасная операция чтения - не изменяет состояние.',
         inputSchema: {
           type: 'object',
           properties: {}
@@ -255,7 +264,7 @@ export class RooTraceMCPHandler {
       },
       {
         name: 'clear_session',
-        description: 'Очищает сессию отладки RooTrace, сбрасывает все гипотезы и логи',
+        description: '[Workflow Group] Очищает сессию отладки RooTrace, сбрасывает все гипотезы и логи. Не изменяет файлы, только очищает внутреннее состояние отладки. Используйте для начала новой сессии отладки или для сброса состояния после завершения задачи. Безопасная операция - не влияет на код или пробы.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -268,7 +277,7 @@ export class RooTraceMCPHandler {
       },
       {
         name: 'inject_probes',
-        description: 'Инъекция проб в код для дополнительной отладочной информации. ⚠️ ЗАПРЕЩЕНО для Python файлов (.py) - используйте apply_diff (Block Rewrite) вместо этого. 🛡️ ВАЖНО: Перед использованием apply_diff ОБЯЗАТЕЛЬНО создайте резервную копию: если git репозиторий - `git add . && git commit -m "AI Debugger: Pre-instrumentation backup"`, если нет git - `cp <file> <file>.bak`.',
+        description: '[Edit Group] Инъекция проб в код для дополнительной отладочной информации. ИЗМЕНЯЕТ ФАЙЛЫ - требует одобрения пользователя. ⚠️ ЗАПРЕЩЕНО для Python файлов (.py) - используйте apply_diff (Block Rewrite) вместо этого. Для apply_diff: используйте формат с :start_line: в diff блоке, SEARCH блок должен точно совпадать с оригиналом (включая whitespace), REPLACE блок содержит функцию с пробами. 🛡️ ВАЖНО: Перед использованием apply_diff ОБЯЗАТЕЛЬНО создайте резервную копию: если git репозиторий - `git add . && git commit -m "AI Debugger: Pre-instrumentation backup"`, если нет git - `cp <file> <file>.bak`. Автоматически проверяет наличие git commit или backup перед изменением. Паттерн использования: read_file → анализ → inject_probes (или apply_diff для Python) → выполнение кода → read_runtime_logs → анализ результатов.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -303,7 +312,7 @@ export class RooTraceMCPHandler {
       },
       {
         name: 'inject_multiple_probes',
-        description: 'Инъекция нескольких проб в код за один вызов. ⚠️ ЗАПРЕЩЕНО для Python файлов (.py) - используйте apply_diff (Block Rewrite) вместо этого. 🛡️ ВАЖНО: Перед использованием apply_diff ОБЯЗАТЕЛЬНО создайте резервную копию: если git репозиторий - `git add . && git commit -m "AI Debugger: Pre-instrumentation backup"`, если нет git - `cp <file> <file>.bak`. Для других языков используйте этот инструмент вместо множественных вызовов inject_probes - это более эффективно и избегает проблем с вложенностью.',
+        description: '[Edit Group] Инъекция нескольких проб в код за один вызов. ИЗМЕНЯЕТ ФАЙЛЫ - требует одобрения пользователя. ⚠️ ЗАПРЕЩЕНО для Python файлов (.py) - используйте apply_diff (Block Rewrite) вместо этого. 🛡️ ВАЖНО: Перед использованием apply_diff ОБЯЗАТЕЛЬНО создайте резервную копию: если git репозиторий - `git add . && git commit -m "AI Debugger: Pre-instrumentation backup"`, если нет git - `cp <file> <file>.bak`. Для других языков используйте этот инструмент вместо множественных вызовов inject_probes - это более эффективно и избегает проблем с вложенностью. Автоматически проверяет наличие git commit или backup перед изменением. Паттерн использования: read_file → анализ → inject_multiple_probes (для нескольких точек) → выполнение кода → read_runtime_logs.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -349,7 +358,7 @@ export class RooTraceMCPHandler {
       },
       {
         name: 'show_user_instructions',
-        description: 'Показывает пользователю инструкции с кнопками для следующих шагов отладки. Используйте этот инструмент после завершения инъекции проб, чтобы показать пользователю что делать дальше.',
+        description: '[Workflow Group] Показывает пользователю инструкции с кнопками для следующих шагов отладки. Используйте этот инструмент после завершения инъекции проб, чтобы показать пользователю что делать дальше. Не изменяет файлы, только отображает UI. Паттерн использования: inject_probes → show_user_instructions → пользователь выполняет действия → read_runtime_logs → анализ.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -367,7 +376,7 @@ export class RooTraceMCPHandler {
       },
       {
         name: 'read_file',
-        description: 'Читает один или несколько файлов параллельно. Поддерживает чтение до 100 файлов за один запрос. Можно указать либо path (один файл), либо paths (массив файлов). Опционально можно указать startLine и endLine для чтения диапазона строк (только для одного файла).',
+        description: '[Read Group] Читает один или несколько файлов параллельно для анализа кода. Поддерживает чтение до 100 файлов за один запрос. Можно указать либо path (один файл), либо paths (массив файлов). Опционально можно указать startLine и endLine для чтения диапазона строк (только для одного файла). Примечание: Пользователь может также использовать @/path/to/file mentions в Roo Code, которые автоматически включают содержимое файлов в контекст. Этот инструмент полезен, когда нужно программно прочитать файлы для анализа или обработки. Пути могут быть в формате @/path/to/file (символ @ будет автоматически удалён) или обычном формате. Паттерн использования: read_file → анализ кода → inject_probes → read_runtime_logs.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -397,7 +406,7 @@ export class RooTraceMCPHandler {
       },
       {
         name: 'mcp--roo-trace--get_problems',
-        description: 'Получает диагностики (ошибки и предупреждения) из VS Code Problems panel. Используйте этот инструмент для автоматического обнаружения и исправления ошибок в коде. Можно указать конкретный файл или получить все диагностики workspace.',
+        description: '[Read Group] Получает диагностики (ошибки и предупреждения) из VS Code Problems panel для автоматического обнаружения проблем в коде. Можно указать конкретный файл или получить все диагностики workspace. Примечание: Пользователь может также использовать @problems mention в Roo Code, который автоматически включает диагностики в контекст. Этот инструмент полезен, когда нужно программно получить диагностики для анализа или для проверки состояния кода после изменений. Паттерн использования: get_problems → анализ ошибок → inject_probes → read_runtime_logs → исправление.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -410,13 +419,13 @@ export class RooTraceMCPHandler {
       },
       {
         name: 'mcp--roo-trace--load_rule',
-        description: 'Загружает конкретное правило из .roo/rules/ для lazy loading. Используйте этот инструмент когда нужно загрузить содержимое правила, которое было загружено только как ссылка.',
+        description: '[Read Group] Загружает конкретное правило из .roo/roo-trace-rules/ для lazy loading модулей инструкций. Используйте этот инструмент для загрузки модулей по требованию, когда нужны дополнительные инструкции для текущей фазы отладки. Поддерживает различные форматы путей: абсолютный путь, относительный от workspace root, или просто имя файла. Не изменяет файлы, только загружает содержимое правил в контекст. Паттерн использования: при старте сессии загрузите базовые модули (00-base-*.md, roo-00-role.md), затем загружайте специализированные модули по мере необходимости.',
         inputSchema: {
           type: 'object',
           properties: {
             rulePath: {
               type: 'string',
-              description: 'Путь к файлу правила (абсолютный или относительный к workspace root)',
+              description: 'Путь к файлу правила. Поддерживаемые форматы: 1) Абсолютный путь, 2) Относительный от workspace root (например, ".roo/roo-trace-rules/00-base-language.md"), 3) Имя файла (например, "00-base-language.md" - будет найден в .roo/roo-trace-rules/)',
             }
           },
           required: ['rulePath']
@@ -439,7 +448,8 @@ export class RooTraceMCPHandler {
         const response = {
           protocolVersion: '2024-11-05',
           capabilities: {
-            tools: {}
+            tools: {},
+            resources: {}
           },
           serverInfo: {
             name: 'RooTrace',
@@ -478,6 +488,192 @@ export class RooTraceMCPHandler {
       }
     });
 
+    // Обработка списка ресурсов
+    this.server.setRequestHandler(ListResourcesRequestSchema, async (request) => {
+      const startTime = Date.now();
+      this.logMCPRequest('list_resources', request.params);
+      
+      try {
+        const workspaceRoot = this.getWorkspaceRootForFiles();
+        const resources = [
+          {
+            uri: 'roo-trace://logs',
+            name: 'Runtime Logs',
+            description: 'Runtime logs from debugging session',
+            mimeType: 'application/json'
+          },
+          {
+            uri: 'roo-trace://status',
+            name: 'Debug Status',
+            description: 'Current debug status including server status and active hypotheses',
+            mimeType: 'application/json'
+          },
+          {
+            uri: 'roo-trace://rules',
+            name: 'Rule Modules',
+            description: 'List of available rule modules in .roo/roo-trace-rules/',
+            mimeType: 'application/json'
+          }
+        ];
+
+        // Добавляем ресурсы для конкретных модулей правил, если они существуют
+        if (workspaceRoot) {
+          const rulesDir = path.join(workspaceRoot, '.roo', 'roo-trace-rules');
+          if (fs.existsSync(rulesDir)) {
+            try {
+              const ruleFiles = fs.readdirSync(rulesDir)
+                .filter(file => file.endsWith('.md'))
+                .slice(0, 50); // Ограничение на количество ресурсов
+              
+              for (const ruleFile of ruleFiles) {
+                resources.push({
+                  uri: `roo-trace://rule/${ruleFile}`,
+                  name: `Rule: ${ruleFile}`,
+                  description: `Rule module: ${ruleFile}`,
+                  mimeType: 'text/markdown'
+                });
+              }
+            } catch (error) {
+              logDebug(`[MCP] Failed to list rule files: ${error}`);
+            }
+          }
+        }
+
+        const response = { resources };
+        const duration = Date.now() - startTime;
+        this.logMCPResponse('list_resources', response, duration);
+        return response;
+      } catch (error) {
+        const duration = Date.now() - startTime;
+        this.logMCPError('list_resources', error, duration);
+        throw error;
+      }
+    });
+
+    // Обработка чтения ресурсов
+    this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+      const startTime = Date.now();
+      const { uri } = request.params;
+      this.logMCPRequest('read_resource', { uri });
+      
+      try {
+        const workspaceRoot = this.getWorkspaceRootForFiles();
+        
+        if (uri === 'roo-trace://logs') {
+          // Возвращаем логи
+          const logs = await sharedStorage.getLogs();
+          const response = {
+            contents: [{
+              uri,
+              mimeType: 'application/json',
+              text: JSON.stringify(logs, null, 2)
+            }]
+          };
+          const duration = Date.now() - startTime;
+          this.logMCPResponse('read_resource', response, duration);
+          return response;
+        } else if (uri === 'roo-trace://status') {
+          // Возвращаем статус отладки
+          const logs = await sharedStorage.getLogs();
+          const hypotheses = await sharedStorage.getHypotheses();
+          const serverUrl = getServerUrl(workspaceRoot);
+          
+          // Подсчитываем количество логов для каждой гипотезы
+          const hypothesisLogCounts = new Map<string, number>();
+          for (const log of logs) {
+            const count = hypothesisLogCounts.get(log.hypothesisId) || 0;
+            hypothesisLogCounts.set(log.hypothesisId, count + 1);
+          }
+          
+          const status = {
+            serverUrl: serverUrl || null,
+            serverActive: !!serverUrl,
+            logsCount: logs.length,
+            hypothesesCount: hypotheses.length,
+            hypotheses: hypotheses.map(h => ({
+              id: h.id,
+              description: h.description,
+              status: h.status,
+              logsCount: hypothesisLogCounts.get(h.id) || 0
+            })),
+            uptime: Date.now() - this.startTime
+          };
+          const response = {
+            contents: [{
+              uri,
+              mimeType: 'application/json',
+              text: JSON.stringify(status, null, 2)
+            }]
+          };
+          const duration = Date.now() - startTime;
+          this.logMCPResponse('read_resource', response, duration);
+          return response;
+        } else if (uri === 'roo-trace://rules') {
+          // Возвращаем список доступных модулей правил
+          const rulesList: string[] = [];
+          if (workspaceRoot) {
+            const rulesDir = path.join(workspaceRoot, '.roo', 'roo-trace-rules');
+            if (fs.existsSync(rulesDir)) {
+              try {
+                const ruleFiles = fs.readdirSync(rulesDir)
+                  .filter(file => file.endsWith('.md'))
+                  .sort();
+                rulesList.push(...ruleFiles);
+              } catch (error) {
+                logDebug(`[MCP] Failed to list rule files: ${error}`);
+              }
+            }
+          }
+          const response = {
+            contents: [{
+              uri,
+              mimeType: 'application/json',
+              text: JSON.stringify({ rules: rulesList }, null, 2)
+            }]
+          };
+          const duration = Date.now() - startTime;
+          this.logMCPResponse('read_resource', response, duration);
+          return response;
+        } else if (uri.startsWith('roo-trace://rule/')) {
+          // Возвращаем содержимое конкретного модуля правила
+          const ruleName = uri.replace('roo-trace://rule/', '');
+          if (!workspaceRoot) {
+            throw new Error('Workspace root not found');
+          }
+          const rulePath = path.join(workspaceRoot, '.roo', 'roo-trace-rules', ruleName);
+          
+          // Проверка безопасности: только файлы из .roo/roo-trace-rules/
+          const normalizedPath = path.normalize(rulePath);
+          const rulesDir = path.normalize(path.join(workspaceRoot, '.roo', 'roo-trace-rules'));
+          if (!normalizedPath.startsWith(rulesDir)) {
+            throw new Error(`Invalid rule path: ${ruleName}`);
+          }
+          
+          if (!fs.existsSync(rulePath)) {
+            throw new Error(`Rule not found: ${ruleName}`);
+          }
+          
+          const content = fs.readFileSync(rulePath, 'utf8');
+          const response = {
+            contents: [{
+              uri,
+              mimeType: 'text/markdown',
+              text: content
+            }]
+          };
+          const duration = Date.now() - startTime;
+          this.logMCPResponse('read_resource', response, duration);
+          return response;
+        } else {
+          throw new Error(`Unknown resource URI: ${uri}`);
+        }
+      } catch (error) {
+        const duration = Date.now() - startTime;
+        this.logMCPError('read_resource', error, duration);
+        throw error;
+      }
+    });
+
     // Обработка вызовов инструментов
     this.server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
       const startTime = Date.now();
@@ -502,7 +698,23 @@ export class RooTraceMCPHandler {
       try {
         let result: CallToolResult;
 
-        switch (name) {
+        // Нормализуем имя инструмента для обработки различных форматов
+        // Модель может преобразовывать двойные дефисы в одинарные или добавлять лишние символы
+        let normalizedName = name
+          .replace(/mcp___roo___trace___/g, 'mcp--roo-trace--') // Исправляем тройные подчёркивания
+          .replace(/mcp--roo___trace--/g, 'mcp--roo-trace--') // Смешанные варианты с подчёркиваниями
+          .replace(/mcp-roo-trace-/g, 'mcp--roo-trace--') // Восстанавливаем двойные дефисы из одинарных
+          .replace(/mcp--roo-trace--mcp--roo-trace--/g, 'mcp--roo-trace--') // Убираем дублирование
+          .replace(/--+/g, '--') // Убираем множественные дефисы
+          .replace(/___+/g, '_') // Убираем множественные подчёркивания
+          .trim();
+        
+        // Логируем нормализацию для отладки
+        if (normalizedName !== name) {
+          logDebug(`[MCP] Tool name normalized: "${name}" -> "${normalizedName}"`);
+        }
+
+        switch (normalizedName) {
           case 'read_runtime_logs': {
             const { sessionId } = args as { sessionId?: string };
             // Проверяем, является ли запрос queued сообщением (неявное одобрение)
@@ -772,7 +984,10 @@ export class RooTraceMCPHandler {
           }
 
           case 'inject_probes': {
-            const { filePath, lineNumber, probeType, message, probeCode, hypothesisId } = args as any;
+            const { filePath: rawFilePath, lineNumber, probeType, message, probeCode, hypothesisId } = args as any;
+            
+            // Нормализуем путь (удаляем @ в начале, если есть)
+            const filePath = rawFilePath ? this.normalizeFilePath(rawFilePath) : rawFilePath;
             
             // Проверяем обязательные параметры
             if (!filePath || typeof filePath !== 'string') {
@@ -1282,14 +1497,19 @@ export class RooTraceMCPHandler {
               limit?: number;
             };
 
+            // Нормализуем пути: удаляем символ @ в начале, если он есть (формат @/path/to/file из Roo Code mentions)
+            const normalizePath = (p: string): string => {
+              return p.startsWith('@') ? p.substring(1) : p;
+            };
+
             // Определяем список файлов для чтения
             let fileList: string[] = [];
             const maxLimit = limit ? Math.min(limit, 100) : 100; // максимальный лимит 100 файлов
 
             if (paths && Array.isArray(paths)) {
-              fileList = paths.slice(0, maxLimit);
+              fileList = paths.slice(0, maxLimit).map(normalizePath);
             } else if (singlePath && typeof singlePath === 'string') {
-              fileList = [singlePath];
+              fileList = [normalizePath(singlePath)];
             } else {
               result = {
                 content: [{
@@ -1377,7 +1597,10 @@ export class RooTraceMCPHandler {
           }
 
           case 'mcp--roo-trace--get_problems': {
-            const { filePath } = args as { filePath?: string };
+            const { filePath: rawFilePath } = args as { filePath?: string };
+            
+            // Нормализуем путь (удаляем @ в начале, если есть)
+            const filePath = rawFilePath ? this.normalizeFilePath(rawFilePath) : rawFilePath;
             
             try {
               // Получаем URL сервера extension
@@ -1544,8 +1767,9 @@ export class RooTraceMCPHandler {
                 type: 'text',
                 text: JSON.stringify({
                   success: false,
-                  error: `Unknown tool: ${name}`,
-                  errorCode: 'UNKNOWN_TOOL'
+                  error: `Unknown tool: ${name} (normalized: ${normalizedName})`,
+                  errorCode: 'UNKNOWN_TOOL',
+                  availableTools: tools.map(t => t.name)
                 })
               }],
               isError: true

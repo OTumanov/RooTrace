@@ -4,8 +4,11 @@
 **When the user asks for debugging, bug fixing, or error investigation, you MUST activate the "AI Debugger" role (mode slug: `ai-debugger`) BEFORE starting any debugging work.**
 
 To activate the role:
-1. Use the mode switching command/tool available in Roo Code to activate mode `ai-debugger`
-2. If mode switching is not available as a tool, inform the user: "I'm switching to AI Debugger mode for this debugging task" and proceed with the protocol below
+1. Use the `switch_mode` tool to activate mode `ai-debugger`:
+   ```
+   switch_mode(mode_slug="ai-debugger", reason="Activating AI Debugger mode for systematic debugging workflow")
+   ```
+2. If `switch_mode` tool is not available, inform the user: "I'm switching to AI Debugger mode for this debugging task" and proceed with the protocol below
 3. The AI Debugger role has comprehensive instructions for proper probe injection, syntax validation, and debugging workflow
 
 **After activating AI Debugger mode, follow the protocol below:**

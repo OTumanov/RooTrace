@@ -77,10 +77,15 @@ async function copyPromptModules(context: vscode.ExtensionContext): Promise<void
 
     const extensionPath = context.extensionPath;
     // Пробуем несколько возможных путей к модулям в расширении
+    // ИСПОЛЬЗУЕМ roo-trace-rules вместо rules-ai-debugger, чтобы Roo Code не загружал их автоматически
     const possibleSourceDirs = [
+        path.join(extensionPath, '.roo', 'roo-trace-rules'),
+        path.join(extensionPath, 'extension', '.roo', 'roo-trace-rules'), // Для упакованного расширения
+        path.join(__dirname, '..', '.roo', 'roo-trace-rules'), // Для разработки
+        // Fallback для обратной совместимости
         path.join(extensionPath, '.roo', 'rules-ai-debugger'),
-        path.join(extensionPath, 'extension', '.roo', 'rules-ai-debugger'), // Для упакованного расширения
-        path.join(__dirname, '..', '.roo', 'rules-ai-debugger') // Для разработки
+        path.join(extensionPath, 'extension', '.roo', 'rules-ai-debugger'),
+        path.join(__dirname, '..', '.roo', 'rules-ai-debugger')
     ];
     
     let sourceDir: string | null = null;
@@ -99,9 +104,10 @@ async function copyPromptModules(context: vscode.ExtensionContext): Promise<void
     }
 
     // Копируем для каждой рабочей области
+    // ИСПОЛЬЗУЕМ roo-trace-rules вместо rules-ai-debugger, чтобы Roo Code не загружал их автоматически
     for (const folder of workspaceFolders) {
         const workspacePath = folder.uri.fsPath;
-        const targetDir = path.join(workspacePath, '.roo', 'rules-ai-debugger');
+        const targetDir = path.join(workspacePath, '.roo', 'roo-trace-rules');
 
         try {
             // Создаем целевую директорию, если её нет

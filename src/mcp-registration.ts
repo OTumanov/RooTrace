@@ -124,102 +124,32 @@ async function registerMcpServerForWorkspace(context: any, workspacePath: string
         ]
       };
     } else {
-      // Формат для Roo Code: {"servers": [...]}
-      // Конфигурация RooTrace в формате MCP
-      const rooTraceServer = {
-        name: 'roo-trace',
-        description: 'RooTrace MCP Server for debugging and tracing',
-        handler: {
-          type: 'stdio',
-          command: 'node',
-          args: [mcpServerPath],
-          env: {
-            ROO_TRACE_WORKSPACE: workspacePath
-          }
-        },
-        tools: [
-          {
-            name: 'read_runtime_logs',
-            description: 'Получает логи отладочной сессии RooTrace',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                sessionId: {
-                  type: 'string',
-                  description: 'ID сессии для получения логов (если не указан, возвращаются логи текущей сессии)'
-                }
-              }
-            }
-          },
-          {
-            name: 'clear_logs',
-            description: 'Очищает ТОЛЬКО логи (без удаления проб/гипотез). Аналог кнопки очистки логов на дашборде.',
-            inputSchema: {
-              type: 'object',
-              properties: {}
-            }
-          },
-          {
-            name: 'get_debug_status',
-            description: 'Возвращает статус сервера (активен/не активен), список активных гипотез и текущую сессию',
-            inputSchema: {
-              type: 'object',
-              properties: {}
-            }
-          },
-          {
-            name: 'clear_session',
-            description: 'Очищает сессию отладки RooTrace, сбрасывает все гипотезы и логи',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                sessionId: {
-                  type: 'string',
-                  description: 'ID сессии для очистки (если не указан, очищается текущая сессия)'
-                }
-              }
-            }
-          },
-          {
-            name: 'inject_probes',
-            description: 'Инъекция проб в код для дополнительной отладочной информации',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                filePath: {
-                  type: 'string',
-                  description: 'Путь к файлу для инъекции проб'
-                },
-                lineNumber: {
-                  type: 'number',
-                  description: 'Номер строки для инъекции пробы'
-                },
-                probeType: {
-                  type: 'string',
-                  enum: ['log', 'trace', 'error'],
-                  description: 'Тип пробы для инъекции'
-                },
-                message: {
-                  type: 'string',
-                  description: 'Сообщение для пробы'
-                }
-              },
-              required: ['filePath', 'lineNumber', 'probeType']
-            }
-          }
-        ]
-      };
-
-      // Проверяем, существует ли уже массив servers, если нет - создаем
-      if (!config.servers) {
-        config.servers = [];
+      // Формат для Roo Code: {"mcpServers": {"roo-trace": {"command": "node", "args": [...]}}}
+      // Согласно документации Roo Code, используется тот же формат, что и для Roo Cline
+      if (!config.mcpServers) {
+        config.mcpServers = {};
       }
 
-      // Удаляем старую конфигурацию RooTrace, если она существует
-      config.servers = config.servers.filter((server: any) => server.name !== 'roo-trace');
-
-      // Добавляем новую конфигурацию RooTrace
-      config.servers.push(rooTraceServer);
+      config.mcpServers['roo-trace'] = {
+        command: 'node',
+        args: [mcpServerPath],
+        env: {
+          ROO_TRACE_WORKSPACE: workspacePath
+        },
+        // Примечание: alwaysAllow включает инструменты для автоматического одобрения
+        // - read_runtime_logs: требует явного одобрения через кнопку (проверка в коде)
+        // - get_debug_status, clear_session: безопасные операции чтения/очистки состояния
+        // - inject_probes: изменяет файлы, но имеет встроенные проверки безопасности (git commit/backup)
+        // - mcp--roo-trace--load_rule, mcp--roo-trace--get_problems: безопасные операции чтения
+        alwaysAllow: [
+          'read_runtime_logs',
+          'get_debug_status',
+          'clear_session',
+          'inject_probes',
+          'mcp--roo-trace--load_rule',
+          'mcp--roo-trace--get_problems'
+        ]
+      };
     }
     
     // Запись обновленной конфигурации в файл
@@ -269,29 +199,24 @@ export async function unregisterMcpServer(): Promise<void> {
         const config: any = JSON.parse(configFileContent);
 
         // Remove RooTrace server configuration
-        if (config.servers) {
-          config.servers = config.servers.filter((server: any) => server.name !== 'roo-trace');
-          
-          // Write updated configuration to file
-          // Acquire lock for the file to prevent concurrent modifications
-          const previousLock = fileOperationLocks.get(configFilePath) || Promise.resolve();
-          let releaseLock: () => void;
-          const currentLock = new Promise<void>((res) => (releaseLock = res));
-          fileOperationLocks.set(configFilePath, previousLock.then(() => currentLock));
-
-          try {
-            await fs.promises.writeFile(configFilePath, JSON.stringify(config, null, 2));
-          } finally {
-            // Release the lock
-            releaseLock!();
-          }
-          console.log(`[RooTrace] Unregistered MCP server from ${folder.name}`);
-        }
-        
-        // Also remove from mcpServers (Roo Cline format)
+        // Удаляем из mcpServers (формат для Roo Code и Roo Cline)
+        let configChanged = false;
         if (config.mcpServers && config.mcpServers['roo-trace']) {
           delete config.mcpServers['roo-trace'];
-          
+          configChanged = true;
+        }
+        
+        // Также удаляем из старого формата servers (для обратной совместимости)
+        if (config.servers) {
+          const originalLength = config.servers.length;
+          config.servers = config.servers.filter((server: any) => server.name !== 'roo-trace');
+          if (config.servers.length !== originalLength) {
+            configChanged = true;
+          }
+        }
+        
+        // Write updated configuration to file if changes were made
+        if (configChanged) {
           // Acquire lock for the file to prevent concurrent modifications
           const previousLock = fileOperationLocks.get(configFilePath) || Promise.resolve();
           let releaseLock: () => void;
@@ -300,6 +225,7 @@ export async function unregisterMcpServer(): Promise<void> {
 
           try {
             await fs.promises.writeFile(configFilePath, JSON.stringify(config, null, 2));
+            console.log(`[RooTrace] Unregistered MCP server from ${folder.name}`);
           } finally {
             // Release the lock
             releaseLock!();
