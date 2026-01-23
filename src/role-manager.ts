@@ -24,13 +24,28 @@ export class RoleManager {
 **🚨 ВАЖНО:** Базовые модули (language, output, error-handling, role, validator) НЕ загружены в этот system prompt. Ты ДОЛЖЕН загрузить их через \`mcp--roo-trace--load_rule\` при первом запуске или когда они нужны.
 
 **Для загрузки модулей используй:**
-\`mcp--roo-trace--load_rule(rulePath=".roo/roo-trace-rules/имя-модуля.md")\`
+\`mcp--roo-trace--load_rule(rulePath="имя-модуля.md")\`
 
-Или просто имя файла:
-\`mcp--roo-trace--load_rule(rulePath="00-base-language.md")\`
+**Рекомендуется использовать только имя файла** (например, \`"00-base-language.md"\`), а не полный путь.
 
 **🛡️ SAFETY FIRST:** Если тебе не хватает знаний для текущей фазы, используй:
 \`mcp--roo-trace--load_rule(rulePath="roo-XX-phase-name.md")\`
+
+---
+
+## 📚 HELP: Операции и инструменты
+
+**🛡️ КРИТИЧЕСКИ ВАЖНО:** Для получения информации об операциях загрузи:
+\`mcp--roo-trace--load_rule(rulePath="00-help-operations.md")\`
+
+Этот модуль содержит:
+- Описание всех Roo Code инструментов (new_task, attempt_completion, apply_diff и др.)
+- Описание всех RooTrace MCP инструментов (get_debug_status, read_runtime_logs и др.)
+- Ссылки на детальные модули для каждой операции
+- Быструю навигацию по модулям
+
+**🚨 START HERE:** При первом запуске сессии ОБЯЗАТЕЛЬНО загрузи help-модуль:
+\`mcp--roo-trace--load_rule(rulePath="00-help-operations.md")\`
 
 ---
 
@@ -84,6 +99,10 @@ Use \`mcp--roo-trace--load_rule(rulePath="module-name.md")\` to load specific mo
 - \`arch-03-format-recon.md\` - Format reconnaissance
 - \`arch-04-format-fix.md\` - Format fixing
 
+**Help & Reference Modules:**
+- \`00-help-operations.md\` - Help: Операции и инструменты (START HERE) ⭐
+- \`roo-00-roo-code-features.md\` - Roo Code возможности (ENHANCE PROMPT, Skills, .rooignore и др.)
+
 **Base Modules (Load on demand - recommended to load at startup):**
 - \`00-base-language.md\` - Language protocol (STRICT: response language rules)
 - \`00-base-output.md\` - Output rules (SILENT MODE: 90% tools, 10% status)
@@ -92,12 +111,17 @@ Use \`mcp--roo-trace--load_rule(rulePath="module-name.md")\` to load specific mo
 - \`00-formats-validator.md\` - Format validation for summaries
 - \`roo-00-role.md\` - RooTrace Orchestrator role definition
 
-**🛡️ STARTUP PROTOCOL:** При первом запуске сессии рекомендуется загрузить базовые модули:
-1. \`mcp--roo-trace--load_rule(rulePath=".roo/roo-trace-rules/00-base-language.md")\`
-2. \`mcp--roo-trace--load_rule(rulePath=".roo/roo-trace-rules/00-base-output.md")\`
-3. \`mcp--roo-trace--load_rule(rulePath=".roo/roo-trace-rules/00-base-error-handling.md")\`
-4. \`mcp--roo-trace--load_rule(rulePath=".roo/roo-trace-rules/roo-00-role.md")\`
-5. \`mcp--roo-trace--load_rule(rulePath=".roo/roo-trace-rules/00-formats-validator.md")\`
+**🛡️ STARTUP PROTOCOL:** При первом запуске сессии рекомендуется загрузить модули в следующем порядке:
+
+**ШАГ 0: Help-модуль (ОБЯЗАТЕЛЬНО ПЕРВЫМ!)**
+0. \`mcp--roo-trace--load_rule(rulePath="00-help-operations.md")\` ⭐ START HERE
+
+**ШАГ 1: Базовые модули (рекомендуется)**
+1. \`mcp--roo-trace--load_rule(rulePath="00-base-language.md")\`
+2. \`mcp--roo-trace--load_rule(rulePath="00-base-output.md")\`
+3. \`mcp--roo-trace--load_rule(rulePath="00-base-error-handling.md")\`
+4. \`mcp--roo-trace--load_rule(rulePath="roo-00-role.md")\`
+5. \`mcp--roo-trace--load_rule(rulePath="00-formats-validator.md")\`
 
 Эти модули содержат критически важные инструкции, которые должны быть загружены для корректной работы.
 
@@ -165,13 +189,22 @@ Use \`mcp--roo-trace--load_rule(rulePath="module-name.md")\` to load specific mo
 **🚨 ВАЖНО:** Базовые модули (language, output, error-handling, role, validator) НЕ загружены в этот system prompt. Ты ДОЛЖЕН загрузить их через \`mcp--roo-trace--load_rule\` при первом запуске или когда они нужны.
 
 **Для загрузки модулей используй:**
-\`mcp--roo-trace--load_rule(rulePath=".roo/roo-trace-rules/имя-модуля.md")\`
+\`mcp--roo-trace--load_rule(rulePath="имя-модуля.md")\`
 
-Или просто имя файла:
-\`mcp--roo-trace--load_rule(rulePath="00-base-language.md")\`
+**Рекомендуется использовать только имя файла** (например, \`"00-base-language.md"\`), а не полный путь.
 
 **🛡️ SAFETY FIRST:** Если тебе не хватает знаний для текущей фазы, используй:
 \`mcp--roo-trace--load_rule(rulePath="roo-XX-phase-name.md")\`
+
+---
+
+## 📚 HELP: Операции и инструменты
+
+**🛡️ КРИТИЧЕСКИ ВАЖНО:** Для получения информации об операциях загрузи:
+\`mcp--roo-trace--load_rule(rulePath="00-help-operations.md")\`
+
+**🚨 START HERE:** При первом запуске сессии ОБЯЗАТЕЛЬНО загрузи help-модуль:
+\`mcp--roo-trace--load_rule(rulePath="00-help-operations.md")\`
 `;
         }
     }

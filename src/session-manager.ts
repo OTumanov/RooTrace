@@ -7,6 +7,7 @@ import { SharedLogStorage, RuntimeLog, Hypothesis } from './shared-log-storage';
 import { encryptObject, decryptObject, getEncryptionKey } from './encryption-utils';
 import { withFileLock } from './file-lock-utils';
 import { getRootraceFilePath } from './rootrace-dir-utils';
+import { parseConfigOrDecrypt } from './utils';
 
 export interface SessionMetadata {
   id: string;
@@ -180,19 +181,11 @@ export class SessionManager {
           // Читаем содержимое файла асинхронно
           const content = await fs.promises.readFile(this.sessionsFilePath, 'utf8');
           
-          let data;
-          try {
-            // Try to parse as JSON first (for backwards compatibility with unencrypted sessions)
-            data = JSON.parse(content);
-          } catch (parseError) {
-            // If JSON parsing fails, try to decrypt the content
-            try {
-              const encryptionKey = getEncryptionKey();
-              data = decryptObject(content, encryptionKey);
-            } catch (decryptError) {
-              console.error('[SessionManager] Error decrypting sessions file:', decryptError);
-              return;
-            }
+          // Используем общую утилиту для парсинга конфигурации с fallback на дешифровку
+          const data = parseConfigOrDecrypt<{ sessions?: SessionMetadata[] }>(content, { sessions: [] });
+          if (!data || !data.sessions) {
+            console.error('[SessionManager] Invalid sessions file format');
+            return;
           }
           
           if (data.sessions && Array.isArray(data.sessions)) {

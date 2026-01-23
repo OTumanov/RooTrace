@@ -7,14 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { RulesCache, RuleMetadata } from './rules-cache';
-
-// Условный импорт vscode - доступен только в контексте VS Code расширения
-let vscode: typeof import('vscode') | undefined;
-try {
-  vscode = require('vscode');
-} catch (e) {
-  vscode = undefined;
-}
+import { getWorkspaceRootOrNull } from './utils/workspace-utils';
 
 export interface LoadedRule {
     /** Путь к файлу правила */
@@ -46,24 +39,10 @@ export class RulesLoader {
 
     /**
      * Получает путь к workspace root
+     * Использует общую утилиту из utils/workspace-utils
      */
     private static getWorkspaceRoot(): string | null {
-        // Приоритет 1: переменная окружения (для MCP сервера)
-        const envWorkspace = process.env.ROO_TRACE_WORKSPACE || process.env.ROO_TRACE_WORKSPACE_ROOT;
-        if (envWorkspace && typeof envWorkspace === 'string' && envWorkspace.trim().length > 0) {
-            return envWorkspace.trim();
-        }
-
-        if (vscode) {
-            // Приоритет 2: VS Code workspace
-            const workspaceFolders = vscode.workspace.workspaceFolders;
-            if (workspaceFolders && workspaceFolders.length > 0) {
-                return workspaceFolders[0].uri.fsPath;
-            }
-        }
-
-        // Fallback: текущая директория
-        return process.cwd();
+        return getWorkspaceRootOrNull();
     }
 
     /**

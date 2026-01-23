@@ -121,7 +121,8 @@
     "watch": "tsc -watch -p ./",
     "test": "jest",
     "test:mcp": "node scripts/test-mcp-integration.js",
-    "verify": "node scripts/verify-build.js"
+    "verify": "node scripts/verify-build.js",
+    "validate-help-links": "ts-node scripts/validate-help-module-links.ts"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",

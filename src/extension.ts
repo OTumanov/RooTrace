@@ -9,6 +9,7 @@ import { SessionManager } from './session-manager';
 import { LogExporter, ExportFormat } from './log-exporter';
 import { encryptObject, decryptObject, getEncryptionKey } from './encryption-utils';
 import { initializeErrorHandler, handleError, logInfo, logDebug, handleWarning } from './error-handler';
+import { parseArrayOrDecrypt, parseConfigOrDecrypt } from './utils';
 import { metricsCollector } from './metrics';
 import { SERVER_CONFIG, RATE_LIMIT_CONFIG } from './constants';
 import { LogData } from './types';
@@ -161,23 +162,12 @@ async function appendLogToFile(hypothesisId: string, context: string, data: LogD
         };
 
         // Read existing logs if file exists
-        let existingLogs = [];
+        let existingLogs: any[] = [];
         if (fs.existsSync(logFilePath)) {
             const fileContent = fs.readFileSync(logFilePath, 'utf8');
             if (fileContent.trim()) {
-                try {
-                    // Try to parse as JSON first (for backwards compatibility)
-                    existingLogs = JSON.parse(fileContent);
-                } catch (parseError) {
-                    // If JSON parsing fails, try to decrypt the content
-                    try {
-                        const encryptionKey = getEncryptionKey();
-                        existingLogs = decryptObject(fileContent, encryptionKey);
-                    } catch (decryptError) {
-                        outputChannel.appendLine(`[ERROR] Failed to decrypt log file: ${decryptError}`);
-                        existingLogs = [];
-                    }
-                }
+                // Используем общую утилиту для парсинга массива с fallback на дешифровку
+                existingLogs = parseArrayOrDecrypt(fileContent, []);
             }
         }
 

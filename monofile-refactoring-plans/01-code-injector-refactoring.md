@@ -47,6 +47,33 @@
 - Регистрация генераторов через интерфейс `ProbeCodeGenerator`
 - Fallback на JavaScript для неизвестных языков
 
+**Интерфейс ProbeCodeGenerator:**
+```typescript
+export interface ProbeCodeGenerator {
+  /**
+   * Генерирует код пробы для указанного языка
+   * @param language Язык программирования (например, 'python', 'javascript')
+   * @param probeType Тип пробы: 'log', 'trace', или 'error'
+   * @param message Сообщение для логирования (будет экранировано)
+   * @param serverUrl URL сервера RooTrace
+   * @param hypothesisId ID гипотезы (H1-H5), опционально
+   * @returns Сгенерированный код пробы для вставки в файл, или null если язык не поддерживается
+   */
+  generate(
+    language: string,
+    probeType: 'log' | 'trace' | 'error',
+    message: string,
+    serverUrl: string,
+    hypothesisId?: string
+  ): string | null;
+  
+  /**
+   * Поддерживаемые языки (массив расширений или названий языков)
+   */
+  readonly supportedLanguages: string[];
+}
+```
+
 ### 3. `code-injector/host-detection/` - Определение хоста для Docker
 **Файлы:**
 - `host-init-generator.ts` - Генерация кода инициализации хоста
@@ -80,6 +107,33 @@
 - Rollback при обнаружении ошибок
 - Конфигурация таймаутов и включения/выключения валидации
 
+**Интерфейс SyntaxValidator:**
+```typescript
+export interface SyntaxValidator {
+  /**
+   * Проверяет синтаксис файла после инъекции пробы
+   * @param filePath Путь к файлу для проверки
+   * @param timeout Таймаут проверки в миллисекундах
+   * @returns Результат проверки синтаксиса
+   */
+  validate(
+    filePath: string,
+    timeout: number
+  ): Promise<SyntaxValidationResult>;
+  
+  /**
+   * Поддерживаемые языки
+   */
+  readonly supportedLanguages: string[];
+}
+
+export interface SyntaxValidationResult {
+  passed: boolean;
+  errors?: string[];
+  warnings?: string[];
+}
+```
+
 ### 5. `code-injector/positioning/` - Определение позиции вставки
 **Файлы:**
 - `insertion-position.ts` - Логика определения позиции вставки
@@ -91,23 +145,50 @@
 - Обработка отступов
 - Специальная логика для Python (внутри функций, избегание недостижимого кода)
 
-### 6. `code-injector/config/` - Конфигурация и утилиты
+### 6. `code-injector/config/` - Конфигурация
 **Файлы:**
-- `server-url.ts` - `getServerUrl()`, `findWorkspaceRoot()`
-- `file-path-utils.ts` - `sanitizeFilePath()`, `getProjectRoot()`
-- `config-reader.ts` - Чтение конфигурации VS Code
+- `server-url.ts` - `getServerUrl()`, `findWorkspaceRoot()` (поиск workspace root от файла)
 
 **Ответственность:**
-- Работа с путями файлов
 - Чтение конфигурации сервера
-- Безопасность (path traversal protection)
+- Поиск workspace root от конкретного файла
+
+**Примечание:** 
+- ⚠️ **НЕ дублировать утилиты!** Использовать общие утилиты из `src/utils/`:
+  - `sanitizeFilePath()` → `utils/file-path-utils.ts`
+  - `getProjectRoot()` → `utils/workspace-utils.ts` (`getWorkspaceRoot()`)
+  - `parseConfigOrDecrypt()` → `utils/config-parser.ts`
 
 ### 7. `code-injector/types.ts` - Типы и интерфейсы
 **Файлы:**
-- `types.ts` - Все интерфейсы (`InjectionResult`, `ProbeInfo`)
+- `types.ts` - Все интерфейсы и типы
 
 **Ответственность:**
 - Определение типов для всех модулей
+
+**Основные интерфейсы:**
+```typescript
+export interface InjectionResult {
+  success: boolean;
+  message: string;
+  insertedCode?: string;
+  syntaxCheck?: SyntaxValidationResult;
+  rollback?: boolean; // Флаг, указывающий что файл был откачен
+  error?: string;
+}
+
+export interface ProbeInfo {
+  id: string;
+  filePath: string;
+  lineNumber: number;
+  originalCode: string;
+  injectedCode: string;
+  probeType: string;
+  message: string;
+  actualLineNumber?: number;
+  probeLinesCount?: number;
+}
+```
 
 ## Этапы рефакторинга
 
@@ -120,11 +201,12 @@
 1. Создать `types.ts` с всеми интерфейсами
 2. Обновить импорты в основном файле
 
-### Этап 3: Извлечение утилит (1 день)
-1. Вынести `file-path-utils.ts`
-2. Вынести `server-url.ts`
-3. Вынести `config-reader.ts`
-4. Протестировать изолированно
+### Этап 3: Извлечение конфигурации (0.5 дня)
+1. Вынести `server-url.ts` (используя `utils/workspace-utils.ts` и `utils/config-parser.ts`)
+2. Вынести `config-reader.ts` (чтение конфигурации VS Code)
+3. Протестировать изолированно
+
+**Примечание:** `file-path-utils.ts` уже в `src/utils/` - использовать оттуда!
 
 ### Этап 4: Извлечение генераторов (2-3 дня)
 1. Создать интерфейс `ProbeCodeGenerator`
@@ -164,11 +246,40 @@
 2. Удалить дублирующийся код
 3. Обновить документацию
 
-### Этап 10: Тестирование и оптимизация (2-3 дня)
-1. Написать интеграционные тесты
-2. Проверить производительность
-3. Оптимизировать критические пути
-4. Обновить документацию
+### Этап 10: Тестирование и оптимизация (3-4 дня)
+
+#### Unit-тесты для каждого модуля:
+- [ ] `probe-injector.test.ts` - тесты инъекции проб
+- [ ] `probe-remover.test.ts` - тесты удаления проб
+- [ ] `probe-registry.test.ts` - тесты реестра проб
+- [ ] `python-generator.test.ts` - тесты генератора Python
+- [ ] `javascript-generator.test.ts` - тесты генератора JS/TS
+- [ ] `go-generator.test.ts` - тесты генератора Go
+- [ ] `python-validator.test.ts` - тесты валидатора Python
+- [ ] `javascript-validator.test.ts` - тесты валидатора JS/TS
+- [ ] `go-validator.test.ts` - тесты валидатора Go
+- [ ] `python-positioning.test.ts` - тесты позиционирования для Python
+- [ ] `server-url.test.ts` - тесты чтения конфигурации
+
+#### Интеграционные тесты:
+- [ ] `code-injector.integration.test.ts` - полный цикл инъекции
+  - Инъекция → валидация → rollback при ошибке
+  - Инъекция → успешная валидация → сохранение
+  - Удаление проб
+  - Множественная инъекция
+
+#### E2E тесты:
+- [ ] `e2e-probe-injection.test.ts` - инъекция → выполнение кода → получение логов
+
+#### Критерии покрытия:
+- Unit-тесты: >80% покрытия для каждого модуля
+- Интеграционные тесты: Все критичные пути покрыты
+- E2E тесты: Все основные сценарии покрыты
+
+#### Оптимизация:
+1. Проверить производительность (бенчмарки до/после)
+2. Оптимизировать критические пути
+3. Обновить документацию
 
 ## Метрики успеха
 - **Размер основного файла**: < 200 строк (сейчас ~1962)
@@ -194,7 +305,18 @@
 4. **Средний**: Извлечение host detection (изолирует Docker логику)
 5. **Низкий**: Рефакторинг core (можно сделать последним)
 
-## Оценка времени
-- **Общее время**: 12-18 рабочих дней
-- **Минимальный MVP**: 8-10 дней (генераторы + валидаторы + core)
-- **Полный рефакторинг**: 15-18 дней
+## Оценка времени (обновлено с учетом тестирования и рисков)
+
+**Базовые оценки:**
+- Общее время: 12-18 рабочих дней
+
+**С учетом рисков (×1.5-2):**
+- **Общее время**: 18-25 рабочих дней
+- **Минимальный MVP**: 12-15 дней (генераторы + валидаторы + core + базовое тестирование)
+- **Полный рефакторинг**: 20-25 дней (включая полное тестирование и оптимизацию)
+
+**Факторы увеличения:**
+- Тестирование каждого модуля: +30%
+- Отладка интеграций: +20%
+- Код ревью и правки: +15%
+- Непредвиденные проблемы: +20%

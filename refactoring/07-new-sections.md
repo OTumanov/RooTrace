@@ -114,19 +114,19 @@
 
 ## ✅ Чеклист обработки новых секций
 
-### Новый модуль:
-- [ ] Создать `roo-00-roo-code-features.md`
-- [ ] Добавить ENHANCE PROMPT
-- [ ] Добавить Custom Instructions (кратко)
-- [ ] Добавить Skills (кратко)
-- [ ] Добавить AGENTS.md Support
-- [ ] Добавить переопределение системного промпта
-- [ ] Добавить контекстные переменные
-- [ ] Добавить User Messages
-- [ ] Добавить Model Temperature
-- [ ] Добавить Code Actions
-- [ ] Добавить Auto-Approval настройки
-- [ ] Добавить .rooignore файл
+### Новый модуль: ✅
+- [x] Создать `roo-00-roo-code-features.md` ✅
+- [x] Добавить ENHANCE PROMPT ✅
+- [x] Добавить Custom Instructions (кратко) ✅
+- [x] Добавить Skills (кратко) ✅
+- [x] Добавить AGENTS.md Support ✅
+- [x] Добавить переопределение системного промпта ✅
+- [x] Добавить контекстные переменные ✅
+- [x] Добавить User Messages ✅
+- [x] Добавить Model Temperature ✅
+- [x] Добавить Code Actions ✅
+- [x] Добавить Auto-Approval настройки ✅
+- [x] Добавить .rooignore файл ✅
 
 ### Обновление существующих:
 - [ ] Обновить `roo-00-input-filter.md` с `ask_followup_question` деталями

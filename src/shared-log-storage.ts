@@ -7,6 +7,7 @@ import { decryptObject, getEncryptionKey } from './encryption-utils';
 import { withFileLock } from './file-lock-utils';
 import { RuntimeLog, Hypothesis, LogData } from './types';
 import { handleError, logDebug } from './error-handler';
+import { parseArrayOrDecrypt } from './utils';
 import { WATCHER_CONFIG, STORAGE_CONFIG } from './constants';
 import { getRootraceFilePath } from './rootrace-dir-utils';
 
@@ -167,29 +168,10 @@ export class SharedLogStorage extends EventEmitter {
         
         let logs: RuntimeLog[] = [];
         
-        // Пытаемся распарсить как JSON (для обратной совместимости)
-        try {
-          const parsed = JSON.parse(fileContent);
-          logs = Array.isArray(parsed) ? parsed : [];
-          logDebug(`Parsed ${logs.length} logs from JSON file`, 'SharedLogStorage.loadFromFile');
-        } catch (parseError) {
-          // Если JSON парсинг не удался, пытаемся расшифровать
-          logDebug(`JSON parse failed, trying to decrypt: ${parseError}`, 'SharedLogStorage.loadFromFile');
-          try {
-            const encryptionKey = getEncryptionKey();
-            const decrypted = decryptObject(fileContent, encryptionKey);
-            logs = Array.isArray(decrypted) ? decrypted : [];
-            logDebug(`Decrypted ${logs.length} logs from encrypted file`, 'SharedLogStorage.loadFromFile');
-          } catch (decryptError) {
-            // Если расшифровка не удалась, обнуляем логи
-            handleError(decryptError, 'SharedLogStorage.loadFromFile', { 
-              action: 'decrypt',
-              filePath: logFilePath 
-            });
-            this.logs = [];
-            this.rebuildIndexes();
-            return;
-          }
+        // Используем общую утилиту для парсинга массива с fallback на дешифровку
+        logs = parseArrayOrDecrypt<any>(fileContent, []);
+        if (logs.length > 0) {
+          logDebug(`Loaded ${logs.length} logs from file`, 'SharedLogStorage.loadFromFile');
         }
         
         // Проверяем, что это массив
