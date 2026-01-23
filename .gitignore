@@ -1,5 +1,8 @@
 node_modules/
-.roo/
+.roo/*
+!.roo/roo-trace-rules/
+!.roo/roo-trace-rules/**
+!.roo/mcp.json
 .vscode/
 dist/
 out/

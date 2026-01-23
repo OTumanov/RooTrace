@@ -40,9 +40,6 @@ build/
 .roomodes
 .roo-trace-sessions.json
 .roo/
-# НО: .roo/rules-ai-debugger/ НУЖЕН для lazy loading промптов!
-!.roo/rules-ai-debugger/
-!.roo/rules-ai-debugger/**/*.md
 
 # Serena files (не нужны для работы расширения)
 .serena/
@@ -63,20 +60,18 @@ tsconfig.json
 # Source maps - не нужны в продакшн пакете (нужны только для отладки)
 out/**/*.map
 
-# Prompts - НУЖНЫ для работы расширения (role-manager загружает их из prompts/)
-# prompts/ - НЕ исключаем!
-!prompts/
-!prompts/**/*.md
+# Prompts - УСТАРЕЛО: больше не используется (все модули в .roo/roo-trace-rules/ с lazy loading)
+# prompts/ - можно исключить, так как не используется
+prompts/
 
-# .roo/rules-ai-debugger/ - НУЖЕН для lazy loading промптов!
-!.roo/rules-ai-debugger/
-!.roo/rules-ai-debugger/**/*.md
+# .roo/roo-trace-rules/ - НУЖЕН для lazy loading промптов!
+!.roo/roo-trace-rules/
+!.roo/roo-trace-rules/**/*.md
 
 # README нужен для пользователей
 # README.md - НЕ исключаем!
 
-# Other markdown files (кроме README, prompts, и .roo/rules-ai-debugger/)
+# Other markdown files (кроме README и .roo/roo-trace-rules/)
 *.md
 !README.md
-!prompts/**/*.md
-!.roo/rules-ai-debugger/**/*.md
+!.roo/roo-trace-rules/**/*.md

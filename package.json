@@ -29,6 +29,10 @@
         "title": "Stop RooTrace Server"
       },
       {
+        "command": "rooTrace.reregisterMcpServer",
+        "title": "Re-register MCP Server"
+      },
+      {
         "command": "debugSidecar.clearLogs",
         "title": "Clear AI Debugger Logs"
       },

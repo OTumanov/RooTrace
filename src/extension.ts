@@ -78,15 +78,11 @@ async function copyPromptModules(context: vscode.ExtensionContext): Promise<void
 
     const extensionPath = context.extensionPath;
     // Пробуем несколько возможных путей к модулям в расширении
-    // ИСПОЛЬЗУЕМ roo-trace-rules вместо rules-ai-debugger, чтобы Roo Code не загружал их автоматически
+    // ИСПОЛЬЗУЕМ roo-trace-rules, чтобы Roo Code не загружал их автоматически
     const possibleSourceDirs = [
         path.join(extensionPath, '.roo', 'roo-trace-rules'),
         path.join(extensionPath, 'extension', '.roo', 'roo-trace-rules'), // Для упакованного расширения
-        path.join(__dirname, '..', '.roo', 'roo-trace-rules'), // Для разработки
-        // Fallback для обратной совместимости
-        path.join(extensionPath, '.roo', 'rules-ai-debugger'),
-        path.join(extensionPath, 'extension', '.roo', 'rules-ai-debugger'),
-        path.join(__dirname, '..', '.roo', 'rules-ai-debugger')
+        path.join(__dirname, '..', '.roo', 'roo-trace-rules') // Для разработки
     ];
     
     let sourceDir: string | null = null;
@@ -105,7 +101,7 @@ async function copyPromptModules(context: vscode.ExtensionContext): Promise<void
     }
 
     // Копируем для каждой рабочей области
-    // ИСПОЛЬЗУЕМ roo-trace-rules вместо rules-ai-debugger, чтобы Roo Code не загружал их автоматически
+    // ИСПОЛЬЗУЕМ roo-trace-rules, чтобы Roo Code не загружал их автоматически
     for (const folder of workspaceFolders) {
         const workspacePath = folder.uri.fsPath;
         const targetDir = path.join(workspacePath, '.roo', 'roo-trace-rules');
@@ -231,6 +227,21 @@ export async function activate(context: vscode.ExtensionContext) {
     
     const clearLogsCommand = vscode.commands.registerCommand('rooTrace.clearLogs', async () => {
         await clearLogs();
+    });
+
+    // Re-register MCP server command (to update configuration without reloading extension)
+    const reregisterMcpServerCommand = vscode.commands.registerCommand('rooTrace.reregisterMcpServer', async () => {
+        try {
+            outputChannel.appendLine('[RooTrace] Re-registering MCP server...');
+            await registerMcpServer(context);
+            outputChannel.appendLine('[RooTrace] MCP server re-registration completed');
+            vscode.window.showInformationMessage('RooTrace: MCP server configuration updated. Please restart Roo Code to apply changes.');
+        } catch (error) {
+            const errorMsg = `Failed to re-register MCP server: ${error}`;
+            outputChannel.appendLine(`[RooTrace] ERROR: ${errorMsg}`);
+            vscode.window.showErrorMessage(`RooTrace: ${errorMsg}`);
+            handleError(error, 'Extension.reregisterMcpServer', { action: 'reregisterMcpServer' });
+        }
     });
 
     // WebView Dashboard command
@@ -461,42 +472,11 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // Автоматически обновляем .roomodes при изменении prompts/ai-debugger-prompt.en.md или prompts/ai-debugger-prompt.md
-    const folders = vscode.workspace.workspaceFolders;
-    if (folders) {
-        for (const folder of folders) {
-            // Watch both English (preferred) and Russian (fallback) versions
-            const englishPromptPath = path.join(folder.uri.fsPath, 'prompts', 'ai-debugger-prompt.en.md');
-            const russianPromptPath = path.join(folder.uri.fsPath, 'prompts', 'ai-debugger-prompt.md');
-            
-            const watchFile = (filePath: string, fileName: string) => {
-                if (fs.existsSync(filePath)) {
-                    fs.watchFile(filePath, { interval: 1000 }, async (curr, prev) => {
-                        if (curr.mtime > prev.mtime) {
-                            outputChannel.appendLine(`[RooTrace] Detected change in ${fileName}, updating .roomodes...`);
-                            try {
-                                await RoleManager.syncRoleWithRoo(context);
-                                outputChannel.appendLine('[RooTrace] .roomodes updated successfully');
-                            } catch (error) {
-                                outputChannel.appendLine(`[RooTrace] ERROR: Failed to update .roomodes: ${error}`);
-                            }
-                        }
-                    });
-                    context.subscriptions.push({
-                        dispose: () => {
-                            fs.unwatchFile(filePath);
-                        }
-                    });
-                }
-            };
-            
-            // Watch both English (preferred) and Russian (fallback) versions
-            watchFile(englishPromptPath, 'ai-debugger-prompt.en.md');
-            watchFile(russianPromptPath, 'ai-debugger-prompt.md');
-        }
-    }
+    // УСТАРЕЛО: prompts/ больше не используется - все модули в .roo/roo-trace-rules/ с lazy loading
+    // Watcher для prompts/ удален, так как файлы из prompts/ не загружаются в system prompt
 
     // UI bridge for MCP: .roo-trace-ui.json -> real VS Code popup with buttons + response file
+    const folders = vscode.workspace.workspaceFolders;
     if (folders) {
         for (const folder of folders) {
             // Убеждаемся, что .rootrace существует и добавлен в .gitignore
@@ -549,6 +529,7 @@ export async function activate(context: vscode.ExtensionContext) {
         startCommand,
         stopCommand,
         clearLogsCommand,
+        reregisterMcpServerCommand,
         openDashboardCommand,
         cleanupCommand,
         exportJSONCommand,

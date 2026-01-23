@@ -120,7 +120,9 @@ async function registerMcpServerForWorkspace(context: any, workspacePath: string
           'read_runtime_logs',
           'get_debug_status',
           'clear_session',
-          'inject_probes'
+          'inject_probes',
+          'load_rule',
+          'get_problems'
         ]
       };
     } else {
@@ -140,14 +142,14 @@ async function registerMcpServerForWorkspace(context: any, workspacePath: string
         // - read_runtime_logs: требует явного одобрения через кнопку (проверка в коде)
         // - get_debug_status, clear_session: безопасные операции чтения/очистки состояния
         // - inject_probes: изменяет файлы, но имеет встроенные проверки безопасности (git commit/backup)
-        // - mcp--roo-trace--load_rule, mcp--roo-trace--get_problems: безопасные операции чтения
+        // - load_rule, get_problems: безопасные операции чтения
         alwaysAllow: [
           'read_runtime_logs',
           'get_debug_status',
           'clear_session',
           'inject_probes',
-          'mcp--roo-trace--load_rule',
-          'mcp--roo-trace--get_problems'
+          'load_rule',
+          'get_problems'
         ]
       };
     }

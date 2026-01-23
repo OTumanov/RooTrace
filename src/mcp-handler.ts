@@ -42,6 +42,7 @@ export class RooTraceMCPHandler {
   private static readonly READ_LOGS_APPROVAL_MAX_AGE_MS = 2 * 60 * 1000; // 2 minutes
   private static readonly AUTO_DEBUG_APPROVAL_FILE = 'allow-auto-debug.json';
   private static readonly AUTO_DEBUG_APPROVAL_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes (user-granted)
+  
 
   constructor() {
     // EventEmitter удален, так как не использовался
@@ -218,7 +219,7 @@ export class RooTraceMCPHandler {
     // Создание сервера (низкоуровневый API)
     this.server = new Server(
       { name: 'RooTrace', version: '1.0.0' },
-      { capabilities: { tools: {} } }
+      { capabilities: { tools: {}, resources: {} } }
     );
 
     // Обработка Initialize Request (обязательно для MCP протокола)
@@ -480,23 +481,35 @@ export class RooTraceMCPHandler {
       try {
         let result: CallToolResult;
 
-        // Нормализуем имя инструмента для обработки различных форматов
-        // Модель может преобразовывать двойные дефисы в одинарные или добавлять лишние символы
-        let normalizedName = name
-          .replace(/mcp___roo___trace___/g, 'mcp--roo-trace--') // Исправляем тройные подчёркивания
-          .replace(/mcp--roo___trace--/g, 'mcp--roo-trace--') // Смешанные варианты с подчёркиваниями
-          .replace(/mcp-roo-trace-/g, 'mcp--roo-trace--') // Восстанавливаем двойные дефисы из одинарных
-          .replace(/mcp--roo-trace--mcp--roo-trace--/g, 'mcp--roo-trace--') // Убираем дублирование
-          .replace(/--+/g, '--') // Убираем множественные дефисы
-          .replace(/___+/g, '_') // Убираем множественные подчёркивания
-          .trim();
+        // ПРОСТОЕ ПРЯМОЕ СРАВНЕНИЕ: ищем инструмент по точному имени (case-insensitive)
+        const nameLower = name.toLowerCase();
+        const matchingTool = tools.find(t => t.name.toLowerCase() === nameLower);
         
-        // Логируем нормализацию для отладки
-        if (normalizedName !== name) {
-          logDebug(`[MCP] Tool name normalized: "${name}" -> "${normalizedName}"`);
+        if (!matchingTool) {
+          const availableTools = tools.map(t => t.name);
+          logDebug(`[MCP] Tool name not found: "${name}". Available tools: ${availableTools.join(', ')}`);
+          result = {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                success: false,
+                error: `Unknown tool: ${name}`,
+                errorCode: 'UNKNOWN_TOOL',
+                availableTools: availableTools,
+                suggestion: `Did you mean one of: ${availableTools.slice(0, 3).join(', ')}? Use the exact tool name from availableTools list.`
+              })
+            }],
+            isError: true
+          };
+          const duration = Date.now() - startTime;
+          this.logMCPResponse(`call_tool:${name}`, result, duration);
+          return result;
         }
+        
+        const actualToolName = matchingTool.name;
+        logDebug(`[MCP] Tool name matched: "${name}" -> "${actualToolName}"`);
 
-        switch (normalizedName) {
+        switch (actualToolName) {
           case 'read_runtime_logs': {
             const { sessionId } = args as { sessionId?: string };
             // Проверяем, является ли запрос queued сообщением (неявное одобрение)
@@ -1378,7 +1391,7 @@ export class RooTraceMCPHandler {
             break;
           }
 
-          case 'mcp--roo-trace--get_problems': {
+          case 'get_problems': {
             const { filePath: rawFilePath } = args as { filePath?: string };
             
             // Нормализуем путь (удаляем @ в начале, если есть)
@@ -1479,7 +1492,7 @@ export class RooTraceMCPHandler {
             break;
           }
 
-          case 'mcp--roo-trace--load_rule': {
+          case 'load_rule': {
             const { rulePath } = args as { rulePath: string };
             
             try {
@@ -1549,7 +1562,7 @@ export class RooTraceMCPHandler {
                 type: 'text',
                 text: JSON.stringify({
                   success: false,
-                  error: `Unknown tool: ${name} (normalized: ${normalizedName})`,
+                  error: `Unknown tool: ${actualToolName} (original: ${name})`,
                   errorCode: 'UNKNOWN_TOOL',
                   availableTools: tools.map(t => t.name)
                 })

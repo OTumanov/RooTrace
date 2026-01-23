@@ -165,7 +165,7 @@ export class RulesLoader {
         const fileName = path.basename(filePath).toLowerCase();
         
         // КРИТИЧЕСКИ ВАЖНО: Базовые модули (00-base-*.md, roo-00-role.md) НЕ являются critical
-        // Они должны загружаться лениво через mcp--roo-trace--load_rule
+        // Они должны загружаться лениво через load_rule
         if (fileName.startsWith('00-base-') || fileName === 'roo-00-role.md') {
             return false;
         }
@@ -362,11 +362,11 @@ export class RulesLoader {
     /**
      * Разрешает путь к правилу, поддерживая различные форматы:
      * - Абсолютный путь: используется как есть (если файл существует)
-     * - Относительный путь от workspace root: `.roo/rules-ai-debugger/module.md`
-     * - Имя файла: `module.md` → ищется в `.roo/rules-ai-debugger/`
-     * - Путь с префиксом: `rules-ai-debugger/module.md` → разрешается относительно workspace root
+     * - Относительный путь от workspace root: `.roo/roo-trace-rules/module.md`
+     * - Имя файла: `module.md` → ищется в `.roo/roo-trace-rules/`
+     * - Путь с префиксом: `roo-trace-rules/module.md` → разрешается относительно workspace root
      * 
-     * БЕЗОПАСНОСТЬ: Разрешает пути ТОЛЬКО внутри директорий .roo/rules* для предотвращения чтения произвольных файлов workspace.
+     * БЕЗОПАСНОСТЬ: Разрешает пути ТОЛЬКО внутри директорий .roo/roo-trace-rules/ для предотвращения чтения произвольных файлов workspace.
      * Произвольные относительные пути (например, "src/index.ts") будут отклонены.
      */
     private static resolveRulePath(rulePath: string): string | null {
@@ -386,37 +386,31 @@ export class RulesLoader {
         // Нормализуем путь (убираем лишние слэши, точки)
         const normalizedPath = rulePath.replace(/^\.\//, '').replace(/\/+/g, '/');
 
-        // Вариант 1: Путь уже содержит .roo/roo-trace-rules/ или .roo/rules-ai-debugger/ (для обратной совместимости)
-        if (normalizedPath.includes('.roo/roo-trace-rules/') || normalizedPath.includes('roo-trace-rules/') ||
-            normalizedPath.includes('.roo/rules-ai-debugger/') || normalizedPath.includes('rules-ai-debugger/')) {
+        // Вариант 1: Путь уже содержит .roo/roo-trace-rules/
+        if (normalizedPath.includes('.roo/roo-trace-rules/') || normalizedPath.includes('roo-trace-rules/')) {
             const fullPath = path.join(workspaceRoot, normalizedPath);
             if (fs.existsSync(fullPath)) {
                 return fullPath;
             }
         }
 
-        // Вариант 2: Путь начинается с roo-trace-rules/ или rules-ai-debugger/ (без .roo/)
-        if (normalizedPath.startsWith('roo-trace-rules/') || normalizedPath.startsWith('rules-ai-debugger/')) {
+        // Вариант 2: Путь начинается с roo-trace-rules/ (без .roo/)
+        if (normalizedPath.startsWith('roo-trace-rules/')) {
             const fullPath = path.join(workspaceRoot, '.roo', normalizedPath);
             if (fs.existsSync(fullPath)) {
                 return fullPath;
             }
         }
 
-        // Вариант 3: Просто имя файла - ищем в .roo/roo-trace-rules/ (приоритет) или .roo/rules-ai-debugger/ (fallback)
+        // Вариант 3: Просто имя файла - ищем в .roo/roo-trace-rules/
         const rooTraceRulesPath = path.join(workspaceRoot, '.roo', 'roo-trace-rules', normalizedPath);
         if (fs.existsSync(rooTraceRulesPath)) {
             return rooTraceRulesPath;
         }
-        // Fallback для обратной совместимости
-        const rulesAiDebuggerPath = path.join(workspaceRoot, '.roo', 'rules-ai-debugger', normalizedPath);
-        if (fs.existsSync(rulesAiDebuggerPath)) {
-            return rulesAiDebuggerPath;
-        }
 
-        // Вариант 4: Относительный путь от workspace root - ТОЛЬКО если начинается с .roo/rules
-        // БЕЗОПАСНОСТЬ: Ограничиваем белым списком директорий .roo/rules* для предотвращения чтения произвольных файлов
-        if (normalizedPath.startsWith('.roo/rules') || normalizedPath.startsWith('rules-')) {
+        // Вариант 4: Относительный путь от workspace root - ТОЛЬКО если начинается с .roo/roo-trace-rules
+        // БЕЗОПАСНОСТЬ: Ограничиваем белым списком директорий .roo/roo-trace-rules для предотвращения чтения произвольных файлов
+        if (normalizedPath.startsWith('.roo/roo-trace-rules') || normalizedPath.startsWith('roo-trace-rules/')) {
             const relativePath = path.join(workspaceRoot, normalizedPath);
             if (fs.existsSync(relativePath)) {
                 return relativePath;

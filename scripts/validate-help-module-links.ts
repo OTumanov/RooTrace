@@ -20,8 +20,8 @@ interface ValidationResult {
 function extractModuleLinks(content: string): string[] {
     const links: string[] = [];
     
-    // Паттерн для поиска ссылок: mcp--roo-trace--load_rule(rulePath="имя-модуля.md")
-    const pattern = /mcp--roo-trace--load_rule\s*\(\s*rulePath\s*=\s*["']([^"']+\.md)["']\s*\)/gi;
+    // Паттерн для поиска ссылок: load_rule(rulePath="имя-модуля.md")
+    const pattern = /load_rule\s*\(\s*rulePath\s*=\s*["']([^"']+\.md)["']\s*\)/gi;
     
     let match;
     while ((match = pattern.exec(content)) !== null) {

@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "roo-trace": {
+      "command": "node",
+      "args": [
+        "/Users/oleg.i.tumanov/.vscode/extensions/roo-trace-dev.rootrace-0.0.1/out/mcp-server.js"
+      ],
+      "env": {
+        "ROO_TRACE_WORKSPACE": "/Users/oleg.i.tumanov/Develop/RooTrace"
+      },
+      "alwaysAllow": [
+        "read_runtime_logs",
+        "get_debug_status",
+        "clear_session",
+        "inject_probes",
+        "load_rule",
+        "get_problems"
+      ]
+    }
+  }
+}
