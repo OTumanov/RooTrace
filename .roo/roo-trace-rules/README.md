@@ -19,9 +19,10 @@ load_rule(rulePath="имя-модуля.md")
 
 ## Модули (38 файлов)
 
-### Базовые модули (2 объединенных файла)
+### Базовые модули (3 файла)
 - `00-base-core.md` - Core: Language protocol, Output rules (SILENT MODE), Error handling (объединенный)
 - `00-base-advanced.md` - Advanced: Penalty system, Format validation, RooTrace Orchestrator role (объединенный)
+- `00-base-priorities.md` - Система приоритетов правил (P0, P1, P2) и разрешение конфликтов
 
 **Примечание:** Старые модули (`00-base-language.md`, `00-base-output.md`, `00-base-error-handling.md`, `00-base-penalties.md`, `00-formats-validator.md`, `roo-00-role.md`) сохранены для обратной совместимости, но рекомендуется использовать объединенные модули.
 
@@ -33,13 +34,14 @@ load_rule(rulePath="имя-модуля.md")
 - `roo-03-receive-architect.md` - Phase 0.3: Приемка summary от Архитектора
 - `roo-04-preflight.md` - Phase 0.4: Pre-Flight Check
 - `roo-05-hypotheses.md` - Phase 1: Формулирование гипотез
-- `roo-06-network.md` - Phase 2: Обнаружение сети
-- `roo-07-smoke-test.md` - Phase 2.2: Smoke Test
+- `roo-06-network.md` - Phase 0.5: Обнаружение сети
+- `roo-07-smoke-test.md` - Phase 0.6: Smoke Test
 - `roo-08-wait.md` - Phase 5: Ожидание пользователя
 - `roo-09-read-logs.md` - Phase 6: Чтение логов
 - `roo-10-cycle-manage.md` - Phase 7: Управление циклами
 - `roo-11-cleanup.md` - Phase 8: Очистка
 - `roo-12-manual-prohibition.md` - Запрет ручного анализа
+- `roo-12-receive-coder.md` - Phase 1.2: Приемка summary от кодера
 - `roo-13-constraints.md` - Критические ограничения
 
 ### Архитектор модули (5 файлов)
@@ -51,7 +53,7 @@ load_rule(rulePath="имя-модуля.md")
 
 ### Кодер модули (14 файлов)
 - `code-00-role.md` - Роль Кодера
-- `code-01-probe-insertion.md` - Phase 2.1: Инъекция проб
+- `code-01-probe-insertion.md` - Phase 1.1: Инъекция проб
 - `code-02-code-fix.md` - Phase 7.3: Исправление кода
 - `code-03-linter-protocol.md` - Протокол проверки линтера
 - `code-04-block-rewrite.md` - Block Rewrite протокол (для Python)

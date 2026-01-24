@@ -31,7 +31,7 @@ For any file (especially Python) instrumentation is performed ONLY through compl
      1. Check diagnostics (see code-03-linter-protocol.md)
      2. If diagnostics passed → CREATE `.patch` file immediately (see code-10-rollback.md)
      3. **ЗАПРЕЩЕНО:** Обновлять TODO списки - это делает оркестратор, а не code mode!
-5. **Endpoint**: Use discovered `FINAL_HOST` and `ACTUAL_PORT` from Phase 2. **FORBIDDEN** to hardcode `localhost:51234`.
+5. **Endpoint**: Use discovered `FINAL_HOST` and `ACTUAL_PORT` from Phase 0.5. **FORBIDDEN** to hardcode `localhost:51234`.
 
 ## ⚖️ CLEAN REPLACEMENT RULE (SINGLE BLOCK RULE)
 

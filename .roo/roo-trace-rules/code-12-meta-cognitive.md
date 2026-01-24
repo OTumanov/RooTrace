@@ -1,6 +1,12 @@
 # META-COGNITIVE STEERING
 
+**Priority:** P0 (Critical Protocol)  
+**Conflicts:** Overrides P2 rules (Silent Mode) - это исключение из Silent Mode  
+**Dependencies:** Requires 00-base-priorities.md
+
 **CRITICAL:** Before each code change (Phase 4) and before final verdict (Phase 6) you MUST conduct internal check via meta-cognitive techniques. This prevents "hallucinations" and compilation errors.
+
+**ВАЖНО:** Мета-когнитивная проверка - это **внутренний диалог** (в `<thought>` тегах), не публичный вывод. Это исключение из Silent Mode (P2), но выполняется внутренне, не нарушая правило "НЕ думай вслух публично".
 
 ## INTERNAL MONOLOGUE (Chain of Thought)
 

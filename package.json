@@ -45,6 +45,10 @@
         "title": "Cleanup RooTrace Debug Code"
       },
       {
+        "command": "rooTrace.removeFromGitignore",
+        "title": "Remove RooTrace from .gitignore and delete artifacts (before uninstall)"
+      },
+      {
         "command": "rooTrace.exportJSON",
         "title": "Export Logs as JSON"
       },

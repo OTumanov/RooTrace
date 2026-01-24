@@ -11,11 +11,11 @@
   - Code contains syntax errors
   - **Auto-debug check showed that `read_runtime_logs` is available** - in this case **IMMEDIATELY SKIP Phase 5**, run code via `execute_command`, then proceed to Phase 6, calling `read_runtime_logs` to read logs
 - **🚨 CRITICAL: TIMESTAMP FIXATION FOR LOG FILTERING:**
-  - **MANDATORY:** When asking user to run application (in Phase 5), you MUST record current timestamp in your internal state: `_run_request_timestamp = new Date().toISOString()` or `_run_request_timestamp = Date.now()`
-  - **MANDATORY:** If you ask user to run application MULTIPLE times (e.g., after fixing probes), you MUST UPDATE `_run_request_timestamp` to the LATEST request time
+  - **ВАЖНО:** `_run_request_timestamp` должен быть установлен в Phase 1.2 (после вставки проб), а не здесь
+  - **ЕСЛИ timestamp еще не установлен:** Установи `_run_request_timestamp = new Date().toISOString()` или `Date.now()`
+  - **ЕСЛИ timestamp уже установлен:** Обнови его до текущего времени (если просишь пользователя запустить код снова)
   - **PURPOSE:** This timestamp will be used in Phase 6 (DATA) to filter out OLD logs that existed BEFORE user ran application
   - **FORMAT:** Store as ISO string (e.g., `"2026-01-21T12:30:45.123Z"`) or Unix timestamp (milliseconds)
-  - **EXAMPLE:** Before outputting "Ready. Run the app...", record: `<thought> Recording run request timestamp: 2026-01-21T12:30:45.123Z</thought>`
 - **CRITICAL:** This is TEXT ONLY, NO tools!
 - ❌ **FORBIDDEN:** Use any tools (update_todo_list, ask_followup_question, show_user_instructions, etc.)
 - ❌ **FORBIDDEN:** Use ask_followup_question - it shows countdown timer and buttons

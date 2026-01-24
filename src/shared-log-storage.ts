@@ -51,6 +51,9 @@ export class SharedLogStorage extends EventEmitter {
   private hypothesisIndex: Map<string, number[]> = new Map();
   private timestampIndex: Map<number, number[]> = new Map();
   
+  // Кэш размера логов для оптимизации производительности
+  private logsSizeCache: number | null = null;
+  
   // Флаг для отслеживания watcher'а файла
   private isWatcherActive: boolean = false;
   // Debounce таймер для watcher'а
@@ -206,8 +209,9 @@ export class SharedLogStorage extends EventEmitter {
           this.logs = this.logs.slice(-maxLogs);
         }
         
-        // Пересоздаем индексы
+        // Пересоздаем индексы и сбрасываем кэш размера
         this.rebuildIndexes();
+        this.logsSizeCache = JSON.stringify(this.logs).length; // Пересчитываем размер после загрузки
         logDebug(`Successfully loaded ${this.logs.length} logs from file`, 'SharedLogStorage.loadFromFile');
       });
     } catch (error) {
@@ -285,6 +289,8 @@ export class SharedLogStorage extends EventEmitter {
    * 
    * В режиме Extension (Writer) - сразу сбрасывает данные на диск.
    * 
+   * БЕЗОПАСНОСТЬ: Проверяет размер логов перед записью для предотвращения DoS атак.
+   * 
    * @param log - Объект RuntimeLog с данными лога
    * 
    * @example
@@ -304,8 +310,43 @@ export class SharedLogStorage extends EventEmitter {
       await this.loadFromFile();
       logDebug(`After loadFromFile: ${this.logs.length} logs in memory`, 'SharedLogStorage.addLog');
       
+      // БЕЗОПАСНОСТЬ: Проверяем размер логов перед добавлением (оптимизированная версия)
+      const maxLogs = this.getMaxLogs();
+      const MAX_LOG_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB лимит
+      
+      // Вычисляем размер инкрементально для производительности
+      const currentSize = this.logsSizeCache ?? JSON.stringify(this.logs).length;
+      const newLogSize = JSON.stringify(log).length;
+      const estimatedSize = currentSize + newLogSize;
+      
+      if (estimatedSize > MAX_LOG_SIZE_BYTES) {
+        // Удаляем старые логи до достижения безопасного размера (оптимизированная версия)
+        const targetSize = Math.floor(MAX_LOG_SIZE_BYTES * 0.8); // 80% от лимита
+        
+        // Вычисляем размер инкрементально вместо вызова JSON.stringify в цикле
+        let removeCount = 0;
+        let currentSizeAfterRemoval = currentSize;
+        
+        while (currentSizeAfterRemoval > targetSize && removeCount < this.logs.length) {
+          const removedLog = this.logs[removeCount];
+          currentSizeAfterRemoval -= JSON.stringify(removedLog).length;
+          removeCount++;
+        }
+        
+        if (removeCount > 0) {
+          this.logs = this.logs.slice(removeCount);
+          this.logsSizeCache = currentSizeAfterRemoval;
+          this.rebuildIndexes();
+          logDebug(`Logs trimmed due to size limit: removed ${removeCount} logs, ${this.logs.length} remaining`, 'SharedLogStorage.addLog');
+        }
+      }
+      
       const index = this.logs.length;
       this.logs.push(log);
+      
+      // Обновляем кэш размера инкрементально (newLogSize уже вычислен выше)
+      this.logsSizeCache = (this.logsSizeCache ?? 0) + newLogSize;
+      
       logDebug(`Added log at index ${index}, total logs: ${this.logs.length}`, 'SharedLogStorage.addLog');
       
       // Обновляем индексы
@@ -322,10 +363,18 @@ export class SharedLogStorage extends EventEmitter {
       this.timestampIndex.get(dayKey)!.push(index);
       
       // Ограничиваем размер логов последними MAX_LOGS записями
-      const maxLogs = this.getMaxLogs();
       if (this.logs.length > maxLogs) {
         const removedCount = this.logs.length - maxLogs;
+        // Удаляем старые логи и пересчитываем размер
+        const removedLogs = this.logs.slice(0, removedCount);
         this.logs = this.logs.slice(-maxLogs);
+        
+        // Обновляем кэш размера
+        if (this.logsSizeCache !== null) {
+          const removedSize = removedLogs.reduce((sum, log) => sum + JSON.stringify(log).length, 0);
+          this.logsSizeCache -= removedSize;
+        }
+        
         // Пересоздаем индексы после обрезки
         this.rebuildIndexes();
       }
@@ -366,6 +415,9 @@ export class SharedLogStorage extends EventEmitter {
       }
       this.timestampIndex.get(dayKey)!.push(index);
     });
+    
+    // Сбрасываем кэш размера при пересоздании индексов (будет пересчитан при следующем addLog)
+    this.logsSizeCache = null;
   }
 
   /**
@@ -448,14 +500,72 @@ export class SharedLogStorage extends EventEmitter {
   }
 
   /**
+   * Получает логи начиная с указанного timestamp
+   * 
+   * КРИТИЧНО для Phase 6: Фильтрует логи по timestamp (только после _run_request_timestamp).
+   * Это предотвращает анализ устаревших данных из предыдущих запусков.
+   * 
+   * @param sinceTimestamp - Timestamp в миллисекундах или ISO строке
+   * @returns Массив логов, отсортированных по времени (от старых к новым)
+   * 
+   * @example
+   * ```typescript
+   * // Получить логи после определенного времени
+   * const since = new Date('2026-01-24T12:00:00Z').getTime();
+   * const recentLogs = await storage.getLogsSince(since);
+   * 
+   * // Или использовать ISO строку
+   * const recentLogs2 = await storage.getLogsSince('2026-01-24T12:00:00Z');
+   * ```
+   */
+  async getLogsSince(sinceTimestamp: number | string): Promise<RuntimeLog[]>;
+  getLogsSince(sinceTimestamp: number | string): RuntimeLog[];
+  getLogsSince(sinceTimestamp: number | string): RuntimeLog[] | Promise<RuntimeLog[]> {
+    // В MCP контексте загружаем логи из файла перед фильтрацией
+    if (vscode === undefined) {
+      return this.loadFromFile().then(() => {
+        return this.filterLogsSince(sinceTimestamp);
+      });
+    }
+    
+    return this.filterLogsSince(sinceTimestamp);
+  }
+
+  /**
+   * Внутренний метод для фильтрации логов по timestamp
+   */
+  private filterLogsSince(sinceTimestamp: number | string): RuntimeLog[] {
+    const since = typeof sinceTimestamp === 'string' 
+      ? new Date(sinceTimestamp).getTime() 
+      : sinceTimestamp;
+    
+    // Валидация timestamp
+    if (isNaN(since) || since < 0) {
+      throw new Error(`Invalid timestamp: ${sinceTimestamp}. Expected a valid number (milliseconds) or ISO string.`);
+    }
+    
+    return this.logs
+      .filter(log => {
+        const logTimestamp = new Date(log.timestamp).getTime();
+        // Игнорируем логи с невалидными timestamp
+        if (isNaN(logTimestamp)) {
+          return false;
+        }
+        return logTimestamp >= since;
+      })
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  }
+
+  /**
    * Очищает все логи
    * Обнуляет JSON-файл логов через блокировку
    */
   async clear(): Promise<void> {
     this.logs = [];
-    // Очищаем индексы
+    // Очищаем индексы и кэш размера
     this.hypothesisIndex.clear();
     this.timestampIndex.clear();
+    this.logsSizeCache = 0;
     // Сохраняем определения гипотез, но сбрасываем их состояние
     this.hypotheses.forEach((hypothesis, key) => {
       this.hypotheses.set(key, { ...hypothesis, status: 'pending' });

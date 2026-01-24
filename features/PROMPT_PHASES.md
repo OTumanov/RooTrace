@@ -55,58 +55,68 @@
 ---
 
 ## Phase 1: Формулирование гипотез
-**Кто:** RooTrace  
+**Кто:** RooTrace САМ (не делегирует!)  
 **Что:** Создает гипотезы H1-H3 (минимум), H1-H5 (рекомендуется)
 - На основе summary от архитектора
 - Использует `sequentialthinking` если доступно
 - Каждая гипотеза = отдельная задача в TODO
+- **КРИТИЧНО:** RooTrace делает это САМ, не делегирует архитектору!
 
 ---
 
-## [STRATEGY] DEBUG-STRATEGIST
-**Кто:** RooTrace  
-**Что:** Определяет точки наблюдения для гипотез
-- ОБЯЗАТЕЛЬНО перед Phase 1.1
-- Планирует где вставлять пробы
-
----
-
-## [STRATEGY] SRE-SHIELD
-**Кто:** RooTrace  
-**Что:** Оценивает overhead проб и стратегию сэмплирования
-- ОБЯЗАТЕЛЬНО перед Phase 1.1
-- Проверяет влияние проб на производительность
-
----
-
-## Phase 2: Network Discovery
+## Phase 0.5: Network Discovery
 **Кто:** RooTrace САМ  
 **Что:** Обнаруживает сетевой endpoint
-1. Читает `.debug_port` или `.debug_port`
-2. Проверяет Docker файлы (`Dockerfile`, `docker-compose.yml`)
-3. Запускает `docker ps`
-4. Если Docker → проверяет bridge (`host.docker.internal` или `172.17.0.1`)
-5. Определяет `FINAL_HOST` и `ACTUAL_PORT`
-- Запрещено: хардкодить `localhost:51234`
+- Читает `.debug_port` (51234 по умолчанию)
+- Проверяет Docker файлы (`Dockerfile`, `docker-compose.yml`)
+- Запускает `docker ps`
+- Если Docker → проверяет bridge (`host.docker.internal` или `172.17.0.1`)
+- Определяет `FINAL_HOST` и `ACTUAL_PORT`
+- **ПОЧЕМУ РАНЬШЕ:** Чтобы сразу знать FINAL_HOST для всех последующих фаз
 
 ---
 
-## Phase 2.2: Smoke Test
+## Phase 0.6: Smoke Test
 **Кто:** RooTrace САМ  
 **Что:** Проверяет работоспособность моста
 - Отправляет тестовый лог на сервер
 - Проверяет получение через `get_debug_status`
 - Валидирует что сервер получает данные
+- **ПОЧЕМУ РАНЬШЕ:** Чтобы сразу убедиться что сеть работает
 
 ---
+
+## Phase 1.5: Стратегия инъекции проб
+**Кто:** Архитектор (через `new_task mode="architect")`  
+**Что:** Находит точки инъекции проб для каждой гипотезы H1-H5
+- Получает уже сформулированные гипотезы от оркестратора
+- Уже в контексте после Phase 0.2 (разведка) - может быстро найти точки
+- Определяет конкретные места в коде (файл:строка:функция) для каждой гипотезы
+- Определяет что логировать (переменные, состояния, значения)
+- Определяет стратегию [DEBUG-STRATEGIST] для каждой точки (краткое обоснование ЗАЧЕМ логируются данные)
+- Определяет стратегию [SRE-SHIELD] для каждой точки
+- Возвращает: H1 -> Файл:Линия -> Что логируем (ADHD-френдли формат)
+
+---
+
+## Phase 1.6: Получение стратегии от архитектора
+**Кто:** RooTrace  
+**Что:** Получает стратегию инъекции проб через `attempt_completion`
+- Валидирует формат: H1 -> Файл:Линия -> Что логируем, [DEBUG-STRATEGIST], [SRE-SHIELD]
+- Сохраняет стратегию для Phase 1.1
+- **КРИТИЧНО:** Summary приходит АВТОМАТИЧЕСКИ, не вызывай `attempt_completion` сам!
+
+---
+
 
 ## Phase 1.1: Вставка проб
 **Кто:** Кодер (через `new_task mode="code")`  
 **Что:** Вставляет отладочные пробы в код
+- Получает стратегию от архитектора (Phase 1.6): H1 -> Файл:Линия -> Что логируем
 - Использует `apply_diff` (Block Rewrite) - НЕ `inject_probes` для Python
 - После КАЖДОЙ вставки проверяет диагностику: `mcp--roo-trace--get_problems(filePath=...)`
 - Создает `.patch` файл после успешной проверки
-- Использует `FINAL_HOST` и `ACTUAL_PORT` (не хардкодит)
+- Использует `FINAL_HOST` и `ACTUAL_PORT` (уже известны из Phase 0.5)
 
 ---
 
@@ -218,9 +228,9 @@
 
 ## Ключевые правила
 
-- **RooTrace САМ делает:** Pre-Flight Check, Network Discovery, Smoke Test, чтение логов, очистка
-- **Делегирует:** Разведку → архитектору, вставку проб → кодеру, анализ логов → архитектору, исправление → кодеру
-- **Запрещено:** Пропускать Phase 2, Phase 2.2, проверку диагностики после каждой вставки
+- **RooTrace САМ делает:** Network Discovery (Phase 0.5), Smoke Test (Phase 0.6), Pre-Flight Check, формулирование гипотез (Phase 1), чтение логов, очистка
+- **Делегирует:** Разведку → архитектору (Phase 0.2), стратегию инъекции проб → архитектору (Phase 1.5), вставку проб → кодеру, анализ логов → архитектору, исправление → кодеру
+- **Запрещено:** Пропускать Phase 0.5, Phase 0.6, проверку диагностики после каждой вставки
 - **Обязательно:** Проверка диагностики после КАЖДОЙ вставки пробы и после КАЖДОГО исправления
 
 ---
@@ -247,8 +257,8 @@
 - `roo-03-receive-architect.md` - Phase 0.3: RECEIVE SUMMARY FROM ARCHITECT
 - `roo-04-preflight.md` - Phase 0.4: PRE-FLIGHT CHECK
 - `roo-05-hypotheses.md` - Phase 1: HYPOTHESES
-- `roo-06-network.md` - Phase 2: NETWORK DISCOVERY
-- `roo-07-smoke-test.md` - Phase 2.2: SMOKE TEST
+- `roo-06-network.md` - Phase 0.5: NETWORK DISCOVERY
+- `roo-07-smoke-test.md` - Phase 0.6: SMOKE TEST
 - `roo-08-wait.md` - Phase 5: WAIT
 - `roo-09-read-logs.md` - Phase 6: DATA (чтение логов)
 - `roo-10-cycle-manage.md` - Phase 7.2, 7.4, 7.5, 7.6: Управление циклом
@@ -408,27 +418,27 @@
 
 ---
 
-### Phase 2: Network Discovery
+### Phase 0.5: Network Discovery
 **Роль:** RooTrace  
 **Модули:**
 - `00-base-language.md`
 - `roo-00-role.md`
 - `roo-06-network.md`
-- `00-base-penalties.md` (штрафы за пропуск Phase 2)
+- `00-base-penalties.md` (штрафы за пропуск Phase 0.5)
 
-**Контекст:** Результаты Phase 0.4
+**Контекст:** Результаты Phase 0.1
 
 ---
 
-### Phase 2.2: Smoke Test
+### Phase 0.6: Smoke Test
 **Роль:** RooTrace  
 **Модули:**
 - `00-base-language.md`
 - `roo-00-role.md`
 - `roo-07-smoke-test.md`
-- `00-base-penalties.md` (штрафы за пропуск Phase 2.2)
+- `00-base-penalties.md` (штрафы за пропуск Phase 0.6)
 
-**Контекст:** FINAL_HOST, ACTUAL_PORT из Phase 2
+**Контекст:** FINAL_HOST, ACTUAL_PORT из Phase 0.5
 
 ---
 
@@ -846,8 +856,8 @@ const modules = [
    - **КРИТИЧНО:** Требование подробного REASON с цитатами кода/логов
 
 3. **`sre-02-preflight.md`** (Для RooTrace - Network/Smoke)
-   - Phase 2: Network Discovery
-   - Phase 2.2: Smoke Test
+   - Phase 0.5: Network Discovery
+   - Phase 0.6: Smoke Test
    - Docker bridge проверка
 
 4. **`code-03-instrumentation.md`** (Для Кодера)
@@ -890,12 +900,13 @@ const modules = [
 - `roo-00-orchestrator.md` (Phase 0, 0.1, 0.4)
 - `arch-01-scout.md` (при делегировании Phase 0.2)
 
-### Phase 1-2.2: Подготовка
+### Phase 1-1.6: Подготовка
 **Модули:**
 - `00-base-language.md`
 - `00-formats-validator.md`
 - `roo-00-orchestrator.md` (Phase 1)
-- `sre-02-preflight.md` (Phase 2, 2.2)
+- `roo-06-network.md` (Phase 0.5)
+- `roo-07-smoke-test.md` (Phase 0.6)
 - `code-03-instrumentation.md` (при делегировании Phase 1.1)
 
 ### Phase 5-6: Сбор данных

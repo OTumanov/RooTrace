@@ -4,6 +4,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { withFileLock } from '../../file-lock-utils';
 import { getWorkspaceRoot, sanitizeFilePath as utilsSanitizeFilePath, getLanguageFromFileExtension } from '../../utils';
 import { 
@@ -290,8 +291,9 @@ export async function injectProbe(
         };
       }
 
-      // Генерируем короткий уникальный ID для этой пробы
-      const probeId = Math.random().toString(36).substring(2, 6);
+      // Генерируем уникальный ID для этой пробы (UUID v4)
+      // Используем crypto для криптографически стойкого генератора
+      const probeId = crypto.randomUUID();
       
       // Используем переданный probeCode или генерируем автоматически
       let finalProbeCode: string;
@@ -350,23 +352,71 @@ export async function injectProbe(
       const newLines = [...lines];
       newLines.splice(insertIndex, 0, ...indentedProbeLines);
 
-      // Записываем измененное содержимое обратно в файл
+      // АТОМАРНАЯ ОПЕРАЦИЯ: Записываем во временный файл, проверяем синтаксис, затем атомарно заменяем оригинал
+      // Это предотвращает race conditions и гарантирует, что оригинальный файл не будет поврежден
       const newContent = newLines.join('\n');
-      await fs.promises.writeFile(safeFilePath, newContent, 'utf8');
+      const tempFilePath = `${safeFilePath}.tmp.${Date.now()}.${crypto.randomBytes(4).toString('hex')}`;
       
-      // Проверяем синтаксис ПОСЛЕ записи
-      const syntaxCheck = await validateSyntax(safeFilePath, language);
+      // Инициализируем syntaxCheck с дефолтными значениями
+      let syntaxCheck: { passed: boolean; errors?: string[]; warnings?: string[] } = {
+        passed: false,
+        errors: [],
+        warnings: []
+      };
       
-      // Если синтаксис сломан - откатываем файл немедленно!
-      if (!syntaxCheck.passed) {
-        await fs.promises.writeFile(safeFilePath, fileContent, 'utf8');
-        return {
-          success: false,
-          message: `Syntax check failed: ${syntaxCheck.errors?.[0] || 'Unknown syntax error'}`,
-          insertedCode: undefined,
-          syntaxCheck: syntaxCheck,
-          rollback: true
-        };
+      try {
+        // 1. Записываем во временный файл
+        await fs.promises.writeFile(tempFilePath, newContent, 'utf8');
+        
+        // 2. Проверяем синтаксис временного файла
+        syntaxCheck = await validateSyntax(tempFilePath, language);
+        
+        // 3. Если синтаксис OK - атомарно заменяем оригинал через rename (с retry для Windows)
+        if (syntaxCheck.passed) {
+          // Retry для rename на Windows (может не быть атомарным если файл открыт)
+          let retries = 3;
+          let lastError: Error | null = null;
+          
+          while (retries > 0) {
+            try {
+              await fs.promises.rename(tempFilePath, safeFilePath);
+              break; // Успешно
+            } catch (error) {
+              lastError = error as Error;
+              retries--;
+              if (retries === 0) {
+                // Последняя попытка - выбрасываем ошибку
+                throw error;
+              }
+              // Экспоненциальная задержка: 100ms, 200ms, 400ms
+              const delay = 100 * Math.pow(2, 3 - retries);
+              await new Promise(resolve => setTimeout(resolve, delay));
+            }
+          }
+        } else {
+          // 4. Если синтаксис сломан - удаляем временный файл (оригинал не тронут)
+          await fs.promises.unlink(tempFilePath).catch(() => {
+            // Игнорируем ошибки удаления временного файла
+          });
+          return {
+            success: false,
+            message: `Syntax check failed: ${syntaxCheck.errors?.[0] || 'Unknown syntax error'}`,
+            insertedCode: undefined,
+            syntaxCheck: syntaxCheck,
+            rollback: false // rollback не нужен - оригинал не тронут
+          };
+        }
+      } catch (error) {
+        // Очищаем временный файл в случае ошибки
+        await fs.promises.unlink(tempFilePath).catch(() => {
+          // Игнорируем ошибки удаления временного файла
+        });
+        throw error;
+      } finally {
+        // Удаляем временный файл если он еще существует (защита от утечек)
+        await fs.promises.unlink(tempFilePath).catch(() => {
+          // Игнорируем ошибки - файл может быть уже удален или переименован
+        });
       }
       
       // Определяем количество строк пробы для точного удаления

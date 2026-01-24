@@ -13,7 +13,7 @@ import { parseArrayOrDecrypt, parseConfigOrDecrypt } from './utils';
 import { metricsCollector } from './metrics';
 import { SERVER_CONFIG, RATE_LIMIT_CONFIG } from './constants';
 import { LogData } from './types';
-import { getRootraceFilePath, ensureRootraceInGitignore } from './rootrace-dir-utils';
+import { getRootraceFilePath, ensureRootraceInGitignore, removeRooTraceFromGitignore, removeRooTraceArtifacts } from './rootrace-dir-utils';
 import { getDiagnosticsForMCP } from './diagnostics-handler';
 
 // Интерфейсы для типизации
@@ -381,6 +381,25 @@ export async function activate(context: vscode.ExtensionContext) {
         await cleanupDebugCode();
     });
 
+    // Удалить записи RooTrace из .gitignore и артефакты (перед удалением расширения)
+    const removeFromGitignoreCommand = vscode.commands.registerCommand('rooTrace.removeFromGitignore', async () => {
+        const folders = vscode.workspace.workspaceFolders;
+        if (!folders || folders.length === 0) {
+            vscode.window.showWarningMessage('RooTrace: Откройте папку workspace перед запуском команды.');
+            return;
+        }
+        const deletedArtifacts = removeRooTraceArtifacts();
+        const changedGitignore = removeRooTraceFromGitignore();
+        const parts: string[] = [];
+        if (deletedArtifacts.length) parts.push(`удалены: ${deletedArtifacts.join(', ')}`);
+        if (changedGitignore) parts.push('записи убраны из .gitignore');
+        if (parts.length) {
+            vscode.window.showInformationMessage(`RooTrace: ${parts.join('; ')}. Можно удалять расширение.`);
+        } else {
+            vscode.window.showInformationMessage('RooTrace: Нет артефактов расширения и записей в .gitignore. Можно удалять расширение.');
+        }
+    });
+
     // Export commands
     const exportJSONCommand = vscode.commands.registerCommand('rooTrace.exportJSON', async () => {
         await exportLogs('json');
@@ -532,6 +551,7 @@ export async function activate(context: vscode.ExtensionContext) {
         reregisterMcpServerCommand,
         openDashboardCommand,
         cleanupCommand,
+        removeFromGitignoreCommand,
         exportJSONCommand,
         exportCSVCommand,
         exportMarkdownCommand,
