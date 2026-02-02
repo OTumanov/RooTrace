@@ -1,0 +1,448 @@
+/**
+ * UI Bridge для WebView панели в VS Code
+ * 
+ * Управляет открытием/закрытием Dashboard панели и обменом сообщений с WebView
+ */
+
+import * as vscode from 'vscode';
+import { RuntimeLog } from '../types';
+import { handleError } from '../error-handler';
+
+export interface WebViewMessage {
+  command?: string;
+  type?: string;
+  logs?: unknown;
+  error?: string;
+  hypothesisId?: string;
+  context?: string;
+  data?: any;
+  probeCode?: string;
+  timestamp?: string;
+}
+
+/**
+ * Создаёт WebView Panel для Dashboard
+ */
+export async function createDashboardPanel(
+  context: vscode.ExtensionContext,
+  callbacks: {
+    getLogs: () => Promise<RuntimeLog[]>;
+    addLog: (log: RuntimeLog) => Promise<void>;
+    clearLogs: () => void;
+    outputChannel: { appendLine: (msg: string) => void };
+  }
+): Promise<vscode.WebviewPanel> {
+  const panel = vscode.window.createWebviewPanel(
+    'aiDebuggerDashboard',
+    'AI Debugger Dashboard',
+    vscode.ViewColumn.Two,
+    {
+      enableScripts: true,
+      retainContextWhenHidden: true
+    }
+  );
+
+  panel.webview.html = getWebviewContent([]);
+
+  // Handle messages from WebView
+  panel.webview.onDidReceiveMessage(async (message: WebViewMessage) => {
+    callbacks.outputChannel.appendLine(
+      `[Dashboard] Received message: ${JSON.stringify(message)}`
+    );
+
+    try {
+      if (message.command === 'clearLogs') {
+        callbacks.clearLogs();
+        panel.webview.postMessage({ type: 'clearLogs' });
+      } else if (message.command === 'sendTestLog') {
+        const testLog: RuntimeLog = {
+          timestamp: new Date().toISOString(),
+          hypothesisId: message.hypothesisId || 'TEST',
+          context: message.context || 'Test log from dashboard',
+          data: message.data || {
+            test: true,
+            source: 'dashboard',
+            timestamp: new Date().toISOString()
+          }
+        };
+
+        await callbacks.addLog(testLog);
+        callbacks.outputChannel.appendLine(`[Dashboard] Test log added: ${testLog.hypothesisId}`);
+
+        panel.webview.postMessage({
+          type: 'testLogResult',
+          success: true,
+          message: `Test log sent: ${testLog.hypothesisId}`,
+          log: testLog
+        });
+      } else if (message.command === 'testProbeCode') {
+        const probeCode = message.probeCode || '';
+        const hypothesisId = message.hypothesisId || 'TEST';
+
+        callbacks.outputChannel.appendLine(
+          `[Dashboard] Testing probe code (${probeCode.length} chars) for ${hypothesisId}`
+        );
+
+        if (probeCode.trim()) {
+          const testLog: RuntimeLog = {
+            timestamp: new Date().toISOString(),
+            hypothesisId: hypothesisId,
+            context: 'Probe code test - logged for manual testing',
+            data: {
+              probeCode: probeCode.substring(0, 500),
+              probeCodeLength: probeCode.length,
+              timestamp: new Date().toISOString(),
+              note: 'This probe code was logged. Copy and execute it in your Python environment to test if it sends logs to the server.'
+            }
+          };
+
+          await callbacks.addLog(testLog);
+          callbacks.outputChannel.appendLine(`[Dashboard] Probe code logged`);
+
+          if (
+            probeCode.includes('http.client') ||
+            probeCode.includes('requests') ||
+            probeCode.includes('urllib')
+          ) {
+            panel.webview.postMessage({
+              type: 'probeTestResult',
+              success: true,
+              message: `Probe code logged (${probeCode.length} chars). Copy the code from the log and execute it in your Python environment.`,
+              probeCode: probeCode.substring(0, 200)
+            });
+          } else {
+            panel.webview.postMessage({
+              type: 'probeTestResult',
+              success: false,
+              message: 'Unknown probe code format. Expected Python code with http.client, requests, or urllib.'
+            });
+          }
+        } else {
+          panel.webview.postMessage({
+            type: 'probeTestResult',
+            success: false,
+            message: 'Probe code is empty. Please enter probe code to test.'
+          });
+        }
+      }
+    } catch (error) {
+      handleError(error, 'UIBridge.onMessage');
+      panel.webview.postMessage({
+        type: 'error',
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+  });
+
+  return panel;
+}
+
+/**
+ * Отправляет логи в WebView
+ */
+export async function sendLogsToWebview(
+  panel: vscode.WebviewPanel | undefined,
+  getLogs: () => Promise<RuntimeLog[]>,
+  outputChannel: { appendLine: (msg: string) => void }
+): Promise<void> {
+  if (!panel) return;
+
+  try {
+    const runtimeLogs = await getLogs();
+    outputChannel.appendLine(`[Dashboard] Sending ${runtimeLogs.length} logs to webview`);
+
+    if (runtimeLogs.length > 0) {
+      const logsToSend = runtimeLogs.map((log) => ({
+        hypothesisId: log.hypothesisId,
+        context: log.context,
+        data: log.data,
+        timestamp: log.timestamp
+      }));
+
+      panel.webview.postMessage({
+        type: 'initialLogs',
+        logs: logsToSend
+      });
+    }
+  } catch (error) {
+    handleError(error, 'UIBridge.sendLogsToWebview');
+  }
+}
+
+/**
+ * Экранирует HTML символы
+ */
+function escapeHtml(text: string): string {
+  const map: { [key: string]: string } = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  };
+  return text.replace(/[&<>"']/g, (m) => map[m]);
+}
+
+/**
+ * Генерирует HTML контент для WebView
+ */
+export function getWebviewContent(logs: string[]): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Debugger Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: var(--vscode-editor-background);
+            color: var(--vscode-editor-foreground);
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+            color: var(--vscode-titleBar-activeForeground);
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: 8px 16px;
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: var(--vscode-button-hoverBackground);
+        }
+
+        button:active {
+            opacity: 0.8;
+        }
+
+        .logs-section {
+            margin-top: 30px;
+        }
+
+        .logs-list {
+            border: 1px solid var(--vscode-editorWidget-border);
+            border-radius: 4px;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+        .log-entry {
+            padding: 12px;
+            border-bottom: 1px solid var(--vscode-editorWidget-border);
+            background: var(--vscode-editor-background);
+        }
+
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+
+        .log-entry:hover {
+            background: var(--vscode-list-hoverBackground);
+        }
+
+        .log-hypothesis {
+            font-weight: 600;
+            color: var(--vscode-terminal-ansiBlue);
+            margin-bottom: 4px;
+        }
+
+        .log-context {
+            color: var(--vscode-terminal-ansiGreen);
+            margin-bottom: 8px;
+            font-size: 13px;
+        }
+
+        .log-timestamp {
+            color: var(--vscode-terminal-ansiGray);
+            font-size: 12px;
+        }
+
+        .log-data {
+            margin-top: 8px;
+            padding: 8px;
+            background: var(--vscode-editor-lineHighlightBackground);
+            border-left: 3px solid var(--vscode-terminal-ansiYellow);
+            border-radius: 2px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 12px;
+            overflow-x: auto;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--vscode-descriptionForeground);
+        }
+
+        .status {
+            padding: 12px;
+            background: var(--vscode-editorInfo-background);
+            border-radius: 4px;
+            margin-bottom: 20px;
+            font-size: 13px;
+        }
+
+        .status.error {
+            background: var(--vscode-errorForeground);
+            color: white;
+        }
+
+        .status.success {
+            background: var(--vscode-terminal-ansiGreen);
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 AI Debugger Dashboard</h1>
+        
+        <div class="controls">
+            <button id="refreshBtn">🔄 Refresh Logs</button>
+            <button id="clearBtn">🗑️ Clear All Logs</button>
+            <button id="testLogBtn">📝 Send Test Log</button>
+        </div>
+
+        <div id="status" class="status" style="display: none;"></div>
+
+        <div class="logs-section">
+            <h2 style="margin-bottom: 10px; font-size: 16px;">Logs</h2>
+            <div id="logsList" class="logs-list">
+                <div class="empty-state">
+                    <p>No logs yet. Send a test log or wait for incoming logs...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const vscode = acquireVsCodeApi();
+
+        // Render logs
+        function renderLogs(logs) {
+            const logsList = document.getElementById('logsList');
+            
+            if (!logs || logs.length === 0) {
+                logsList.innerHTML = '<div class="empty-state"><p>No logs yet. Send a test log or wait for incoming logs...</p></div>';
+                return;
+            }
+
+            logsList.innerHTML = logs.map(log => \`
+                <div class="log-entry">
+                    <div class="log-hypothesis">\${escapeHtml(log.hypothesisId)}</div>
+                    <div class="log-context">\${escapeHtml(log.context)}</div>
+                    <div class="log-data">\${escapeHtml(JSON.stringify(log.data, null, 2))}</div>
+                    <div class="log-timestamp">\${new Date(log.timestamp).toLocaleString()}</div>
+                </div>
+            \`).join('');
+        }
+
+        function escapeHtml(text) {
+            const map = {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            };
+            return String(text).replace(/[&<>"']/g, m => map[m]);
+        }
+
+        function showStatus(message, type = 'info') {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = 'status ' + type;
+            status.style.display = 'block';
+            
+            if (type !== 'error') {
+                setTimeout(() => {
+                    status.style.display = 'none';
+                }, 3000);
+            }
+        }
+
+        // Event listeners
+        document.getElementById('refreshBtn').addEventListener('click', () => {
+            showStatus('Refreshing logs...');
+            vscode.postMessage({ command: 'refresh' });
+        });
+
+        document.getElementById('clearBtn').addEventListener('click', () => {
+            if (confirm('Are you sure you want to clear all logs?')) {
+                vscode.postMessage({ command: 'clearLogs' });
+                showStatus('Logs cleared!', 'success');
+            }
+        });
+
+        document.getElementById('testLogBtn').addEventListener('click', () => {
+            const hypothesisId = prompt('Enter hypothesis ID (e.g., H1):') || 'TEST';
+            const context = prompt('Enter context message:') || 'Test log from dashboard';
+            
+            if (hypothesisId && context) {
+                vscode.postMessage({
+                    command: 'sendTestLog',
+                    hypothesisId: hypothesisId,
+                    context: context,
+                    data: {
+                        test: true,
+                        source: 'dashboard',
+                        timestamp: new Date().toISOString()
+                    }
+                });
+                showStatus(\`Test log sent: \${hypothesisId}\`, 'success');
+            }
+        });
+
+        // Handle messages from extension
+        window.addEventListener('message', event => {
+            const message = event.data;
+            
+            if (message.type === 'initialLogs') {
+                renderLogs(message.logs);
+            } else if (message.type === 'newLog') {
+                // New log arrived via WebSocket
+                showStatus('New log received!', 'success');
+                renderLogs(message.logs);
+            } else if (message.type === 'clearLogs') {
+                renderLogs([]);
+                showStatus('Logs cleared', 'success');
+            } else if (message.type === 'testLogResult') {
+                showStatus(message.message, message.success ? 'success' : 'error');
+            }
+        });
+
+        // Initial render
+        renderLogs(${JSON.stringify(logs)});
+    </script>
+</body>
+</html>`;
+}

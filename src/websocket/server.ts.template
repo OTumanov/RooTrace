@@ -1,0 +1,141 @@
+/**
+ * WebSocket обработчик для RooTrace
+ * 
+ * Отправляет обновления логов подключённым клиентам в реальном времени
+ */
+
+import { RuntimeLog } from '../types';
+import { logDebug } from '../error-handler';
+
+export interface WebSocketClient {
+  readyState: number;
+  send(data: string): void;
+  close(): void;
+}
+
+const WEBSOCKET_STATES = {
+  CONNECTING: 0,
+  OPEN: 1,
+  CLOSING: 2,
+  CLOSED: 3
+};
+
+/**
+ * Устанавливает слушателей WebSocket
+ */
+export function setupWebSocketListeners(
+  sharedStorage: any, // SharedLogStorage instance
+  wsClients: Set<WebSocketClient>,
+  config?: {
+    autoCleanupInactiveClients?: boolean;
+    outputChannel?: { appendLine: (msg: string) => void };
+  }
+): void {
+  const autoCleanup = config?.autoCleanupInactiveClients ?? true;
+  const outputChannel = config?.outputChannel;
+
+  sharedStorage.on('logAdded', (log: RuntimeLog) => {
+    // Отправляем новый лог всем подключенным WebSocket клиентам
+    const message = JSON.stringify({
+      type: 'newLog',
+      log,
+      timestamp: Date.now()
+    });
+
+    outputChannel?.appendLine(`[WebSocket] Broadcasting log to ${wsClients.size} clients`);
+
+    const clientsToRemove: WebSocketClient[] = [];
+
+    wsClients.forEach((client) => {
+      try {
+        if (client.readyState === WEBSOCKET_STATES.OPEN) {
+          client.send(message);
+        } else {
+          // Клиент закрыт или закрывается - помечаем для удаления
+          if (autoCleanup) {
+            clientsToRemove.push(client);
+            outputChannel?.appendLine(
+              `[WebSocket] Marking inactive client for removal (state: ${client.readyState})`
+            );
+          }
+        }
+      } catch (error) {
+        outputChannel?.appendLine(`[WebSocket] Error sending to client: ${error}`);
+        if (autoCleanup) {
+          clientsToRemove.push(client);
+        }
+      }
+    });
+
+    // Удаляем неактивные клиенты
+    if (autoCleanup && clientsToRemove.length > 0) {
+      clientsToRemove.forEach((client) => wsClients.delete(client));
+      outputChannel?.appendLine(
+        `[WebSocket] Removed ${clientsToRemove.length} inactive clients`
+      );
+    }
+  });
+
+  logDebug(`WebSocket listeners setup for ${wsClients.size} clients`, 'setupWebSocketListeners');
+}
+
+/**
+ * Отправляет сообщение всем подключённым клиентам
+ */
+export function broadcastToClients(
+  wsClients: Set<WebSocketClient>,
+  messageType: string,
+  data: any,
+  config?: { outputChannel?: { appendLine: (msg: string) => void } }
+): number {
+  const message = JSON.stringify({
+    type: messageType,
+    data,
+    timestamp: Date.now()
+  });
+
+  let successCount = 0;
+  const clientsToRemove: WebSocketClient[] = [];
+
+  wsClients.forEach((client) => {
+    try {
+      if (client.readyState === WEBSOCKET_STATES.OPEN) {
+        client.send(message);
+        successCount++;
+      } else {
+        clientsToRemove.push(client);
+      }
+    } catch (error) {
+      config?.outputChannel?.appendLine(`[WebSocket] Broadcast error: ${error}`);
+      clientsToRemove.push(client);
+    }
+  });
+
+  // Cleanup dead connections
+  clientsToRemove.forEach((client) => wsClients.delete(client));
+
+  return successCount;
+}
+
+/**
+ * Закрывает все WebSocket соединения
+ */
+export function closeAllWebSockets(
+  wsClients: Set<WebSocketClient>,
+  config?: { outputChannel?: { appendLine: (msg: string) => void } }
+): void {
+  const count = wsClients.size;
+
+  wsClients.forEach((client) => {
+    try {
+      if (client.readyState !== WEBSOCKET_STATES.CLOSED) {
+        client.close();
+      }
+    } catch (error) {
+      config?.outputChannel?.appendLine(`[WebSocket] Error closing client: ${error}`);
+    }
+  });
+
+  wsClients.clear();
+  logDebug(`Closed ${count} WebSocket connections`, 'closeAllWebSockets');
+}
