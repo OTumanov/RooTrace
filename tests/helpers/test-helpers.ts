@@ -141,13 +141,20 @@ export async function waitForLogsSaved(storage: any, expectedCount: number, time
     const receivedLogs: any[] = [];
     let resolved = false;
     
+    const cleanup = () => {
+      if (checkInterval) {
+        clearInterval(checkInterval);
+      }
+      storage.removeListener('logAdded', logAddedHandler);
+    };
+    
     const checkAndResolve = async () => {
       if (resolved) return;
       try {
         const currentLogs = await storage.getLogs();
         if (currentLogs.length >= expectedCount) {
           resolved = true;
-          storage.removeListener('logAdded', logAddedHandler);
+          cleanup();
           resolve();
         }
       } catch (e) {
@@ -168,9 +175,8 @@ export async function waitForLogsSaved(storage: any, expectedCount: number, time
     }, 100);
     
     // Таймаут на случай если события не придут
-    setTimeout(async () => {
-      clearInterval(checkInterval);
-      storage.removeListener('logAdded', logAddedHandler);
+    const timeoutId = setTimeout(async () => {
+      cleanup();
       if (!resolved) {
         try {
           const finalLogs = await storage.getLogs();
@@ -184,5 +190,14 @@ export async function waitForLogsSaved(storage: any, expectedCount: number, time
         }
       }
     }, timeout);
+    
+    // Очистка таймаута при успешном разрешении (на всякий случай)
+    const originalResolve = resolve;
+    resolve = ((value: any) => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      originalResolve(value);
+    }) as any;
   });
 }
