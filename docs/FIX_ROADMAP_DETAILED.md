@@ -593,11 +593,16 @@ git tag -d milestone-phase-1-complete
 
 ### Фаза 2: Синхронизация HTTP/MCP (2.5 часа)
 
-**Текущее состояние**: Race condition между двумя серверами → потеря логов  
-**Риск**: Потеря данных отладки  
+**Статус**: Фаза 2.1 (MVCC Versioning) ВЫПОЛНЕНА ✅
+**Коммит**: `b25c846`
+**Тег**: `phase-2.1-complete`
+**Дата**: 2026-02-02
+
+**Текущее состояние**: Race condition между двумя серверами → потеря логов
+**Риск**: Потеря данных отладки
 **Время**: 2-2.5 часа
 
-#### 2.1 Implement Versioned Logs (MVCC)
+#### 2.1 Implement Versioned Logs (MVCC) — **ВЫПОЛНЕНО** ✅
 
 ```typescript
 // src/versioned-logs.ts
@@ -921,10 +926,10 @@ export class MetricsCollector {
 | 1 | Atomic Write | 1.5h | 🔴 CRITICAL |
 | 1 | Memory Leak fix | 1h | 🔴 CRITICAL |
 | **SUBTOTAL PHASE 1** | **Stability foundation** | **5h** | **🔴 URGENT** |
-| 2 | HTTP/MCP Sync | 2.5h | 🟠 HIGH |
-| 3 | Async I/O | 2h | 🟠 HIGH |
-| 4 | Split extension.ts | 3h | 🟠 HIGH |
-| **SUBTOTAL PHASE 2** | **Architecture cleanup** | **7.5h** | **🟠 THIS WEEK** |
+| 2.1 | MVCC Versioning | 1h | ✅ COMPLETED (b25c846) |
+| 2.2 | Async I/O for Large Logs | 1.5h | 🔄 IN PROGRESS |
+| 2.3 | Split extension.ts | 3h | ⏳ PENDING |
+| **SUBTOTAL PHASE 2** | **Architecture cleanup** | **5.5h** | **🟠 IN PROGRESS** |
 | 5 | Testing | 4h | 🟡 MEDIUM |
 | 6 | LLM Prompts | 5h | 🟡 MEDIUM |
 | 7 | Performance | 3h | 🟡 MEDIUM |
