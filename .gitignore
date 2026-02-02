@@ -21,3 +21,5 @@ build/
 # VSCode extension builds
 *.vsix
 .rootrace
+.roo/roo-trace-rules
+.roomodes

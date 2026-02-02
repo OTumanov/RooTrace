@@ -15,6 +15,10 @@ import { SERVER_CONFIG, RATE_LIMIT_CONFIG } from './constants';
 import { LogData } from './types';
 import { getRootraceFilePath, ensureRootraceInGitignore, removeRooTraceFromGitignore, removeRooTraceArtifacts } from './rootrace-dir-utils';
 import { getDiagnosticsForMCP } from './diagnostics-handler';
+import { LogService } from './services/log-service';
+import { StorageService, AIDebugConfig } from './services/storage-service';
+import { PromptService } from './services/prompt-service';
+import { RoleService } from './services/role-service';
 
 // Интерфейсы для типизации
 interface WebSocketClient {
@@ -179,12 +183,6 @@ async function appendLogToFile(hypothesisId: string, context: string, data: LogD
     }
 }
 
-// Configuration interface
-interface AIDebugConfig {
-    url: string;
-    status: string;
-    timestamp: number;
-}
 
 export async function activate(context: vscode.ExtensionContext) {
     // Убеждаемся, что .rootrace существует и добавлен в .gitignore при активации

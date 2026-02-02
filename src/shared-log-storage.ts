@@ -335,6 +335,35 @@ export class SharedLogStorage extends EventEmitter {
       }
     }
   }
+
+  /**
+   * Сохраняет логи в файл с ЗАМЕНОЙ всего содержимого (для операций clear)
+   * В отличие от saveToFileWithMvcc, это не выполняет merge и не перезагружает логи из файла
+   */
+  private async saveToFileWithReplace(logs: RuntimeLog[]): Promise<void> {
+    const logFilePath = this.getLogFilePath();
+    
+    try {
+      const result = await VersionedLogStore.replaceLogs(logFilePath, logs, {
+        incrementVersion: true,
+        useLock: true,
+        lockTimeout: 30000,
+        lockPriority: 'normal',
+        useStreaming: true
+      });
+      
+      logDebug(`Successfully replaced logs in file with ${logs.length} entries, version: ${result.version}`, 'SharedLogStorage.saveToFileWithReplace');
+      
+      // Обновляем версию
+      this.currentVersionId = result.versionId;
+    } catch (error) {
+      handleError(error, 'SharedLogStorage.saveToFileWithReplace', {
+        filePath: logFilePath,
+        logsCount: logs.length
+      });
+      throw error;
+    }
+  }
   
   /**
    * Получает путь к файлу логов
@@ -647,6 +676,14 @@ export class SharedLogStorage extends EventEmitter {
    * Обнуляет JSON-файл логов через блокировку
    */
   async clear(): Promise<void> {
+    const wasWatcherActive = this.isWatcherActive;
+    
+    // Временно останавливаем watcher
+    if (wasWatcherActive) {
+      this.stopWatcher();
+    }
+    
+    // Очищаем память
     this.logs = [];
     // Очищаем индексы и кэш размера
     this.hypothesisIndex.clear();
@@ -656,8 +693,20 @@ export class SharedLogStorage extends EventEmitter {
     this.hypotheses.forEach((hypothesis, key) => {
       this.hypotheses.set(key, { ...hypothesis, status: 'pending' });
     });
-    // БЕЗОТКАЗНОСТЬ: Обнуляем файл через блокировку с MVCC
-    await this.saveToFileWithMvcc([]);
+    
+    // БЕЗОТКАЗНОСТЬ: Обнуляем файл через блокировку с ЗАМЕНОЙ (не merge!)
+    try {
+      await this.saveToFileWithReplace([]);
+    } catch (error) {
+      handleError(error, 'SharedLogStorage.clear');
+    }
+    
+    // Перезапускаем watcher
+    if (wasWatcherActive) {
+      this.startWatcher();
+    }
+    
+    this.emit('logsCleared');
   }
 
   /**
