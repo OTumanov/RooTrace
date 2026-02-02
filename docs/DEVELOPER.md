@@ -71,8 +71,8 @@ cat .roomodes
 
 # Файлы конфигурации RooTrace
 ls -la .rootrace/
-cat .rootrace/ai_debug_config
-cat .rootrace/debug_port
+cat .rootrace/debug_port    # Актуальный порт в открытом виде
+# Примечание: .rootrace/ai_debug_config шифруется для безопасности (не читается текстом)
 ```
 
 ### Частые проблемы

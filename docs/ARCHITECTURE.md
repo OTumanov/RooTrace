@@ -58,8 +58,8 @@ export async function withFileLock<T>(
 **Хранение файлов:**
 - Все файлы конфигурации и логов хранятся в директории `.rootrace/` в корне проекта
 - Файл логов: `.rootrace/ai_debug_logs.json`
-- Конфигурация: `.rootrace/ai_debug_config`
-- Порт сервера: `.rootrace/debug_port`
+- Конфигурация: `.rootrace/ai_debug_config` (шифруется для безопасности; для legacy-совместимости также проверяется `.ai_debug_config` в корне как fallback)
+- Порт сервера: `.rootrace/debug_port` (открытый текст, содержит актуальный номер порта)
 - Файлы одобрения: `.rootrace/allow-read-runtime-logs.json`, `.rootrace/allow-auto-debug.json`
 - Директория `.rootrace` автоматически добавляется в `.gitignore`
 
@@ -208,7 +208,7 @@ AI Debugger следует строгому протоколу из 9 фаз:
 
 Все пробы следуют строгим правилам гигиены кода:
 
-1. **Zero-Dependency Injections**: Используются только стандартные библиотеки или то, что уже есть в файле
+1. **Standard Library / Built-in Tools Injections**: Используются стандартные библиотеки (Python: `urllib`, JS: `fetch`, Go: `net/http`, PHP: `curl`) или встроенные системные утилиты. Для некоторых языков (C++: `curl`, Rust: `ureq`) используются широко распространённые внешние инструменты как best-effort решение
 2. **Metadata Abstraction**: Метаданные в `state`, а не в `message`
 3. **The 5-Line Rule**: Проба не должна превышать 5-7 строк
 4. **Асинхронность**: Не блокирует основной поток (Go: `go func()`, Python: `timeout=5.0`)

@@ -39,9 +39,9 @@ npm run package
 ### Первый запуск
 
 При первом открытии проекта расширение автоматически:
-- Запустит HTTP-сервер на порту 51234 (или настроенном в `rooTrace.serverPort`)
+- Запустит HTTP-сервер на порту 51234 (по умолчанию; может быть переопределён в `rooTrace.serverPort` в VS Code Settings). Актуальный порт сохраняется в `.rootrace/debug_port`
 - Зарегистрирует MCP-сервер RooTrace
-- Создаст конфигурационные файлы (`.roo/mcp.json`, `.rootrace/ai_debug_logs.json`, `.rootrace/ai_debug_config`, `.rootrace/debug_port`)
+- Создаст конфигурационные файлы (`.roo/mcp.json`, `.rootrace/ai_debug_logs.json`, `.rootrace/ai_debug_config`, `.rootrace/debug_port`). Примечание: конфиг шифруется для безопасности; порт в открытом виде
 - Создаст директорию `.rootrace/` и добавит её в `.gitignore`
 
 Проверьте канал Output > AI Debugger для подтверждения запуска.
@@ -245,7 +245,7 @@ try { fetch('http://localhost:51234/', { ... }) } catch(e) {}
 
 **Решение:**
 1. Проверьте, что Node.js установлен и доступен в PATH
-2. HTTP-сервер использует порт 51234 (стандартный, не требует конфигурации)
+2. HTTP-сервер использует порт 51234 по умолчанию (может быть изменен через `rooTrace.serverPort` в VS Code Settings). Проверьте файл `.rootrace/debug_port` для актуального порта
 3. Перезапустите VSCode
 4. Проверьте логи в Output > AI Debugger
 
