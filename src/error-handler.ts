@@ -136,14 +136,10 @@ export class ErrorHandler {
     const logLine = this.formatStructuredLog(log);
     const formattedMessage = `[${log.level.toUpperCase()}] ${logLine}`;
     
-    // Логируем в консоль для MCP сервера
+    // Логируем в консоль для MCP сервера (STDIO transport)
+    // ВАЖНО: никогда не пишем в stdout, чтобы не повредить JSON-RPC сообщения
     if (vscode === undefined) {
-      // DEBUG и INFO идут в stdout, WARN и ERROR в stderr
-      if (log.level === LogLevel.DEBUG || log.level === LogLevel.INFO) {
-        console.log(formattedMessage);
-      } else {
-        console.error(formattedMessage);
-      }
+      console.error(formattedMessage);
       return;
     }
 
