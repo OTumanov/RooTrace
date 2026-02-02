@@ -180,16 +180,8 @@ const code = generateProbeCode('python', 'log', 'User login', 'http://localhost:
 - C# (cs)
 - Swift
 - Kotlin (kt, kts)
-- Scala (scala, sc)
-- Lua
-- Perl (pl, pm)
-- R
-- MATLAB (m, mm)
-- Dart
-- CSS (комментарии)
-- HTML (комментарии)
 
-**Примечание:** Для языков, не указанных в списке, используется JavaScript как fallback.
+**Примечание:** Для языков, не указанных в списке, используется generic fallback механизм. Для максимальной совместимости рекомендуется использовать один из основных языков из списка выше.
 
 ---
 
