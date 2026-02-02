@@ -103,6 +103,8 @@ export class SharedLogStorage extends EventEmitter {
   
   // Флаг для отслеживания watcher'а файла
   private isWatcherActive: boolean = false;
+  // FSWatcher хэндл (для корректной очистки)
+  private watcherHandle: fs.FSWatcher | null = null;
   // Debounce таймер для watcher'а
   private watcherDebounceTimer: NodeJS.Timeout | null = null;
 
@@ -143,22 +145,25 @@ export class SharedLogStorage extends EventEmitter {
    * Запускает watcher для отслеживания изменений файла логов
    * Используется в MCP контексте для синхронизации с HTTP сервером
    * Использует debounce для оптимизации производительности
+   * Использует fs.watch() с корректной очисткой вместо fs.watchFile()
    */
   private startWatcher(): void {
-    if (this.isWatcherActive) return;
+    // КРИТИЧНО: Очищаем старый watcher перед созданием нового
+    this.stopWatcher();
     
     const logFilePath = this.getLogFilePath();
     
-    // БЕЗОТКАЗНОСТЬ: Следим за изменениями файла, чтобы MCP всегда был в курсе
-    // Оптимизация: используем debounce для уменьшения количества операций чтения
-    fs.watchFile(logFilePath, { interval: WATCHER_CONFIG.CHECK_INTERVAL_MS }, async (curr, prev) => {
-      if (curr.mtime !== prev.mtime) {
+    try {
+      // БЕЗОТКАЗНОСТЬ: Используем fs.watch вместо fs.watchFile для правильной очистки ресурсов
+      this.watcherHandle = fs.watch(logFilePath, { persistent: false }, (eventType, filename) => {
+        if (eventType !== 'change') return;
+        
         // Очищаем предыдущий таймер debounce
         if (this.watcherDebounceTimer) {
           clearTimeout(this.watcherDebounceTimer);
         }
         
-        // Устанавливаем новый таймер с debounce
+        // Устанавливаем новый таймер с debounce для оптимизации производительности
         this.watcherDebounceTimer = setTimeout(async () => {
           try {
             await this.loadFromFile();
@@ -169,17 +174,22 @@ export class SharedLogStorage extends EventEmitter {
           }
           this.watcherDebounceTimer = null;
         }, WATCHER_CONFIG.DEBOUNCE_DELAY_MS);
-      }
-    });
-    
-    this.isWatcherActive = true;
+      });
+      
+      this.isWatcherActive = true;
+    } catch (error) {
+      // Если fs.watch не сработал, логируем но не падаем
+      handleError(error, 'SharedLogStorage.startWatcher', { filePath: logFilePath });
+      this.isWatcherActive = false;
+    }
   }
 
   /**
    * Останавливает watcher файла (для тестов и cleanup)
+   * КРИТИЧНО: Очищает ВСЕ ресурсы явно для предотвращения утечек памяти
    */
   stopWatcher(): void {
-    if (!this.isWatcherActive) return;
+    if (!this.isWatcherActive && !this.watcherHandle) return;
     
     // Очищаем debounce таймер
     if (this.watcherDebounceTimer) {
@@ -187,13 +197,17 @@ export class SharedLogStorage extends EventEmitter {
       this.watcherDebounceTimer = null;
     }
     
-    const logFilePath = this.getLogFilePath();
-    try {
-      fs.unwatchFile(logFilePath);
-      this.isWatcherActive = false;
-    } catch (e) {
-      handleError(e, 'SharedLogStorage.stopWatcher', { filePath: logFilePath });
+    // Закрываем fs.watch хэндл
+    if (this.watcherHandle) {
+      try {
+        this.watcherHandle.close();
+      } catch (e) {
+        // ignore - иногда уже закрыт
+      }
+      this.watcherHandle = null;
     }
+    
+    this.isWatcherActive = false;
   }
   
   /**
@@ -728,5 +742,41 @@ export class SharedLogStorage extends EventEmitter {
    */
   getLogCount(): number {
     return this.logs.length;
+  }
+
+  /**
+   * Полная очистка ресурсов при деактивации расширения
+   * КРИТИЧНО: Вызывать при завершении работы расширения для предотвращения утечек памяти
+   * 
+   * Очищает:
+   * - fs.watch хэндл (watcher файла)
+   * - Все debounce таймеры
+   * - EventEmitter слушатели
+   * - Ссылки на логи и гипотезы
+   */
+  public dispose(): void {
+    logDebug('SharedLogStorage.dispose() called', 'SharedLogStorage');
+    
+    // 1. Останавливаем watcher файла (закрывает fs.watch хэндл)
+    this.stopWatcher();
+    
+    // 2. Удаляем ВСЕ EventEmitter слушатели для предотвращения утечек
+    this.removeAllListeners();
+    
+    // 3. Очищаем логи (освобождаем память)
+    this.logs = [];
+    
+    // 4. Очищаем гипотезы
+    this.hypotheses.clear();
+    
+    // 5. Очищаем индексы
+    this.hypothesisIndex.clear();
+    this.timestampIndex.clear();
+    
+    // 6. Сбрасываем кэш
+    this.logsSizeCache = null;
+    this.currentVersionId = null;
+    
+    logDebug('SharedLogStorage.dispose() completed', 'SharedLogStorage');
   }
 }

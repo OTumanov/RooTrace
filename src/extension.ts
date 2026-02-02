@@ -2076,7 +2076,17 @@ function removeAIDebugConfig() {
 
 export function deactivate() {
     console.error('[RooTrace] Extension DEACTIVATING...');
-    // Graceful degradation: завершаем сессию если есть активная
+    
+    // 1. Очищаем SharedLogStorage ресурсы (КРИТИЧНО для предотвращения утечек памяти)
+    try {
+        if (sharedStorage) {
+            sharedStorage.dispose();
+        }
+    } catch (error) {
+        outputChannel.appendLine(`[DEACTIVATE] Error disposing sharedStorage: ${error}`);
+    }
+    
+    // 2. Завершаем сессию если есть активная
     try {
         const sessionManager = SessionManager.getInstance();
         sessionManager.completeSession();
@@ -2084,7 +2094,7 @@ export function deactivate() {
         outputChannel.appendLine(`[DEACTIVATE] Error completing session: ${error}`);
     }
 
-    // Закрываем WebSocket соединения
+    // 3. Закрываем WebSocket соединения
     wsClients.forEach(client => {
         try {
             if (client.readyState === 1) {
@@ -2096,6 +2106,7 @@ export function deactivate() {
     });
     wsClients.clear();
 
+    // 4. Закрываем HTTP сервер
     if (server) {
         server.close();
         server = null;
@@ -2108,10 +2119,12 @@ export function deactivate() {
         removeAIDebugConfig();
     }
     
-    // Unregister MCP server (graceful degradation - не падаем если ошибка)
+    // 5. Unregister MCP server (graceful degradation - не падаем если ошибка)
     try {
         unregisterMcpServer();
     } catch (error) {
         outputChannel.appendLine(`[DEACTIVATE] Error unregistering MCP server: ${error}`);
     }
+    
+    console.error('[RooTrace] Extension DEACTIVATION COMPLETE');
 }
