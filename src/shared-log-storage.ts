@@ -206,7 +206,8 @@ export class SharedLogStorage extends EventEmitter {
       const result = await VersionedLogStore.readLatestVersion(logFilePath, {
         validateHash: true,
         strictValidation: false,
-        useLock: true
+        useLock: true,
+        useStreaming: true
       });
       
       // Загружаем логи в память с валидацией типов
@@ -267,7 +268,8 @@ export class SharedLogStorage extends EventEmitter {
         incrementVersion: true,
         useLock: true,
         lockTimeout: 30000,
-        lockPriority: 'normal'
+        lockPriority: 'normal',
+        useStreaming: true
       });
       
       logDebug(`Successfully saved ${logs.length} logs to ${logFilePath} using VersionedLogStore`, 'SharedLogStorage.saveToFile');
@@ -293,8 +295,10 @@ export class SharedLogStorage extends EventEmitter {
     
     while (retryCount < maxRetries) {
       try {
-        // Используем mergeLogs из VersionedLogStore для обработки конфликтов
-        const result = await VersionedLogStore.mergeLogs(logFilePath, logs, 'smart');
+        // Используем mergeLogs из VersionedLogStore для обработки конфликтов с потоковой записью
+        const result = await VersionedLogStore.mergeLogs(logFilePath, logs, 'smart', {
+            useStreaming: true
+        });
         
         // Обновляем локальное состояние
         this.logs = result.mergedLogs;

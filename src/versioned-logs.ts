@@ -17,6 +17,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { withFileLock } from './file-lock-utils';
 import { atomicWriteJson, readFileIfExists } from './atomic-write';
+import { parseJSONStream, writeJSONStream } from './streaming-json';
 import { RuntimeLog, VersionedLogFile } from './types';
 import { handleError, logDebug } from './error-handler';
 
@@ -59,6 +60,11 @@ export interface ReadOptions {
      * Использовать блокировку файла при чтении (по умолчанию false)
      */
     useLock?: boolean;
+    
+    /**
+     * Использовать потоковое чтение JSON (по умолчанию false для обратной совместимости)
+     */
+    useStreaming?: boolean;
 }
 
 /**
@@ -84,6 +90,11 @@ export interface WriteOptions {
      * Приоритет операции блокировки (по умолчанию 'normal')
      */
     lockPriority?: 'high' | 'normal' | 'low';
+    
+    /**
+     * Использовать потоковую запись JSON (по умолчанию false для обратной совместимости)
+     */
+    useStreaming?: boolean;
 }
 
 /**
@@ -134,52 +145,84 @@ export class VersionedLogStore {
         const {
             validateHash = true,
             strictValidation = false,
-            useLock = false
+            useLock = false,
+            useStreaming = false
         } = options;
         
         const readOperation = async (): Promise<ReadResult> => {
             try {
-                // Читаем содержимое файла
-                const content = await readFileIfExists(filePath, 'utf-8');
-                
-                if (!content) {
-                    // Файл не существует или пуст
-                    return {
-                        logs: [],
-                        metadata: {
-                            version: 0,
-                            versionId: this.generateVersionId(),
-                            hash: this.calculateHash([]),
-                            timestamp: new Date().toISOString()
-                        },
-                        isValid: true,
-                        validationMessage: 'File does not exist, returning empty logs'
-                    };
-                }
-                
-                // Парсим JSON
                 let parsed: any;
-                try {
-                    parsed = JSON.parse(content);
-                } catch (parseError) {
-                    logDebug(`Failed to parse JSON from ${filePath}: ${parseError}`, 'VersionedLogStore.readLatestVersion');
+                
+                if (useStreaming) {
+                    // Используем потоковое чтение JSON
+                    try {
+                        parsed = await parseJSONStream(filePath, {
+                            maxFileSize: 100 * 1024 * 1024, // 100MB
+                            encoding: 'utf-8',
+                            validateJson: true
+                        });
+                    } catch (streamError) {
+                        logDebug(`Failed to parse JSON via streaming from ${filePath}: ${streamError}`, 'VersionedLogStore.readLatestVersion');
+                        
+                        if (strictValidation) {
+                            throw new Error(`Invalid JSON format in log file (streaming): ${streamError instanceof Error ? streamError.message : String(streamError)}`);
+                        }
+                        
+                        // Возвращаем пустые логи при невалидном JSON
+                        return {
+                            logs: [],
+                            metadata: {
+                                version: 0,
+                                versionId: this.generateVersionId(),
+                                hash: this.calculateHash([]),
+                                timestamp: new Date().toISOString()
+                            },
+                            isValid: false,
+                            validationMessage: `Streaming parse failed: ${streamError instanceof Error ? streamError.message : String(streamError)}`
+                        };
+                    }
+                } else {
+                    // Используем традиционное чтение файла
+                    const content = await readFileIfExists(filePath, 'utf-8');
                     
-                    if (strictValidation) {
-                        throw new Error(`Invalid JSON format in log file: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+                    if (!content) {
+                        // Файл не существует или пуст
+                        return {
+                            logs: [],
+                            metadata: {
+                                version: 0,
+                                versionId: this.generateVersionId(),
+                                hash: this.calculateHash([]),
+                                timestamp: new Date().toISOString()
+                            },
+                            isValid: true,
+                            validationMessage: 'File does not exist, returning empty logs'
+                        };
                     }
                     
-                    // Возвращаем пустые логи при невалидном JSON
-                    return {
-                        logs: [],
-                        metadata: {
-                            version: 0,
-                            versionId: this.generateVersionId(),
-                            hash: this.calculateHash([]),
-                            timestamp: new Date().toISOString()
-                        },
-                        isValid: false,
-                        validationMessage: 'Invalid JSON format'
-                    };
+                    // Парсим JSON
+                    try {
+                        parsed = JSON.parse(content);
+                    } catch (parseError) {
+                        logDebug(`Failed to parse JSON from ${filePath}: ${parseError}`, 'VersionedLogStore.readLatestVersion');
+                        
+                        if (strictValidation) {
+                            throw new Error(`Invalid JSON format in log file: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+                        }
+                        
+                        // Возвращаем пустые логи при невалидном JSON
+                        return {
+                            logs: [],
+                            metadata: {
+                                version: 0,
+                                versionId: this.generateVersionId(),
+                                hash: this.calculateHash([]),
+                                timestamp: new Date().toISOString()
+                            },
+                            isValid: false,
+                            validationMessage: 'Invalid JSON format'
+                        };
+                    }
                 }
                 
                 // Проверяем формат данных
@@ -366,7 +409,8 @@ export class VersionedLogStore {
             incrementVersion = true,
             useLock = true,
             lockTimeout = 30000,
-            lockPriority = 'normal'
+            lockPriority = 'normal',
+            useStreaming = false
         } = options;
         
         const writeOperation = async (): Promise<{ version: number; versionId: string; hash: string }> => {
@@ -397,14 +441,23 @@ export class VersionedLogStore {
                     previousHash: currentResult.metadata.hash
                 };
                 
-                // Атомарно записываем в файл
-                await atomicWriteJson(filePath, versionedLogs, {
-                    encoding: 'utf-8',
-                    cleanupOldTempFiles: 3600000,
-                    mode: 0o644
-                });
+                // Записываем в файл с использованием потоков или атомарной записи
+                if (useStreaming) {
+                    await writeJSONStream(filePath, versionedLogs, {
+                        pretty: true,
+                        encoding: 'utf-8',
+                        mode: 0o644
+                    });
+                } else {
+                    // Атомарно записываем в файл
+                    await atomicWriteJson(filePath, versionedLogs, {
+                        encoding: 'utf-8',
+                        cleanupOldTempFiles: 3600000,
+                        mode: 0o644
+                    });
+                }
                 
-                logDebug(`Replaced logs in ${filePath}, new version: ${newVersion}, logs: ${logs.length}, hash: ${newHash.substring(0, 16)}...`, 'VersionedLogStore.replaceLogs');
+                logDebug(`Replaced logs in ${filePath}, new version: ${newVersion}, logs: ${logs.length}, hash: ${newHash.substring(0, 16)}..., streaming: ${useStreaming}`, 'VersionedLogStore.replaceLogs');
                 
                 return {
                     version: newVersion,
@@ -438,7 +491,8 @@ export class VersionedLogStore {
     static async mergeLogs(
         filePath: string,
         newLogs: RuntimeLog[],
-        mergeStrategy: 'append' | 'replace' | 'smart' = 'smart'
+        mergeStrategy: 'append' | 'replace' | 'smart' = 'smart',
+        options: WriteOptions = {}
     ): Promise<{
         mergedLogs: RuntimeLog[];
         version: number;
@@ -446,13 +500,17 @@ export class VersionedLogStore {
         hash: string;
         conflictResolved: boolean;
     }> {
+        const {
+            useStreaming = false
+        } = options;
         return withFileLock(filePath, async () => {
             try {
-                // Читаем текущие логи
+                // Читаем текущие логи с использованием потокового чтения если нужно
                 const currentResult = await this.readLatestVersion(filePath, {
                     validateHash: true,
                     strictValidation: false,
-                    useLock: false
+                    useLock: false,
+                    useStreaming
                 });
                 
                 let mergedLogs: RuntimeLog[];
@@ -510,14 +568,23 @@ export class VersionedLogStore {
                     previousHash: currentResult.metadata.hash
                 };
                 
-                // Атомарно записываем в файл
-                await atomicWriteJson(filePath, versionedLogs, {
-                    encoding: 'utf-8',
-                    cleanupOldTempFiles: 3600000,
-                    mode: 0o644
-                });
+                // Записываем в файл с использованием потоков или атомарной записи
+                if (useStreaming) {
+                    await writeJSONStream(filePath, versionedLogs, {
+                        pretty: true,
+                        encoding: 'utf-8',
+                        mode: 0o644
+                    });
+                } else {
+                    // Атомарно записываем в файл
+                    await atomicWriteJson(filePath, versionedLogs, {
+                        encoding: 'utf-8',
+                        cleanupOldTempFiles: 3600000,
+                        mode: 0o644
+                    });
+                }
                 
-                logDebug(`Merged logs in ${filePath}, strategy: ${mergeStrategy}, merged: ${mergedLogs.length} logs, conflict resolved: ${conflictResolved}`, 'VersionedLogStore.mergeLogs');
+                logDebug(`Merged logs in ${filePath}, strategy: ${mergeStrategy}, merged: ${mergedLogs.length} logs, conflict resolved: ${conflictResolved}, streaming: ${useStreaming}`, 'VersionedLogStore.mergeLogs');
                 
                 return {
                     mergedLogs,
