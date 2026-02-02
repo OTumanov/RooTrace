@@ -9,6 +9,9 @@ import { waitForLogsSaved } from './helpers/test-helpers';
 // Мокаем vscode перед импортом модулей, которые его используют
 jest.mock('vscode', () => require('./vscode-mock'), { virtual: true });
 
+// Глобальный таймаут для всех тестов (30 секунд)
+jest.setTimeout(30000);
+
 /**
  * Комплексные тесты для SharedLogStorage и Железного моста (Iron Bridge)
  * 

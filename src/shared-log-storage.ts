@@ -11,6 +11,7 @@ import { handleError, logDebug } from './error-handler';
 import { parseArrayOrDecrypt } from './utils';
 import { WATCHER_CONFIG, STORAGE_CONFIG } from './constants';
 import { getRootraceFilePath } from './rootrace-dir-utils';
+import { VersionedLogStore, ReadResult } from './versioned-logs';
 
 // Re-export типы для обратной совместимости
 export type { RuntimeLog, Hypothesis, LogData };
@@ -196,97 +197,55 @@ export class SharedLogStorage extends EventEmitter {
   }
   
   /**
-   * Загружает логи из файла с использованием блокировки и поддержкой MVCC
+   * Загружает логи из файла с использованием VersionedLogStore
    */
   private async loadFromFile(): Promise<void> {
     const logFilePath = this.getLogFilePath();
     
     try {
-      await withFileLock(logFilePath, async () => {
-        if (!fs.existsSync(logFilePath)) {
-          logDebug(`File does not exist: ${logFilePath}, initializing empty logs`, 'SharedLogStorage.loadFromFile');
-          this.logs = [];
-          this.currentVersionId = null;
-          this.rebuildIndexes();
-          return;
-        }
-        
-        const fileContent = fs.readFileSync(logFilePath, 'utf8');
-        logDebug(`Loaded file content (${fileContent.length} chars): ${fileContent.substring(0, 100)}...`, 'SharedLogStorage.loadFromFile');
-        
-        if (!fileContent.trim()) {
-          logDebug('File is empty or whitespace only, initializing empty logs', 'SharedLogStorage.loadFromFile');
-          this.logs = [];
-          this.currentVersionId = null;
-          this.rebuildIndexes();
-          return;
-        }
-        
-        let logs: RuntimeLog[] = [];
-        let versionId: string | null = null;
-        
-        try {
-          // Пытаемся распарсить как VersionedLogFile
-          const parsed = JSON.parse(fileContent);
-          if (parsed && typeof parsed === 'object' && 'versionId' in parsed && 'logs' in parsed) {
-            // Это новый формат с версионированием
-            versionId = parsed.versionId;
-            logs = parsed.logs || [];
-            logDebug(`Loaded versioned file, versionId: ${versionId}, logs: ${logs.length}`, 'SharedLogStorage.loadFromFile');
-          } else {
-            // Старый формат (просто массив)
-            logs = parsed;
-            versionId = null;
-            logDebug(`Loaded legacy format file (no versionId), logs: ${logs.length}`, 'SharedLogStorage.loadFromFile');
-          }
-        } catch (parseError) {
-          // Если JSON парсинг не удался, пробуем дешифровку через parseArrayOrDecrypt
-          logs = parseArrayOrDecrypt<any>(fileContent, []);
-          versionId = null;
-          logDebug(`Used parseArrayOrDecrypt fallback, logs: ${logs.length}`, 'SharedLogStorage.loadFromFile');
-        }
-        
-        // Проверяем, что это массив
-        if (!Array.isArray(logs)) {
-          this.logs = [];
-          this.currentVersionId = null;
-          this.rebuildIndexes();
-          return;
-        }
-        
-        // Загружаем логи в память с валидацией типов
-        this.logs = [];
-        for (const logEntry of logs) {
-          // Проверяем формат лога
-          if (logEntry && typeof logEntry === 'object' &&
-              'timestamp' in logEntry &&
-              'hypothesisId' in logEntry &&
-              'context' in logEntry) {
-            const log: RuntimeLog = {
-              timestamp: String(logEntry.timestamp),
-              hypothesisId: String(logEntry.hypothesisId),
-              context: String(logEntry.context || ''),
-              data: (logEntry.data as LogData) || {}
-            };
-            
-            this.logs.push(log);
-          }
-        }
-        
-        // Ограничиваем размер логов
-        const maxLogs = this.getMaxLogs();
-        if (this.logs.length > maxLogs) {
-          this.logs = this.logs.slice(-maxLogs);
-        }
-        
-        // Сохраняем versionId для оптимистичной блокировки
-        this.currentVersionId = versionId;
-        
-        // Пересоздаем индексы и сбрасываем кэш размера
-        this.rebuildIndexes();
-        this.logsSizeCache = JSON.stringify(this.logs).length; // Пересчитываем размер после загрузки
-        logDebug(`Successfully loaded ${this.logs.length} logs from file, versionId: ${versionId || 'none'}`, 'SharedLogStorage.loadFromFile');
+      const result = await VersionedLogStore.readLatestVersion(logFilePath, {
+        validateHash: true,
+        strictValidation: false,
+        useLock: true
       });
+      
+      // Загружаем логи в память с валидацией типов
+      this.logs = [];
+      for (const logEntry of result.logs) {
+        // Проверяем формат лога
+        if (logEntry && typeof logEntry === 'object' &&
+            'timestamp' in logEntry &&
+            'hypothesisId' in logEntry &&
+            'context' in logEntry) {
+          const log: RuntimeLog = {
+            timestamp: String(logEntry.timestamp),
+            hypothesisId: String(logEntry.hypothesisId),
+            context: String(logEntry.context || ''),
+            data: (logEntry.data as LogData) || {}
+          };
+          
+          this.logs.push(log);
+        }
+      }
+      
+      // Ограничиваем размер логов
+      const maxLogs = this.getMaxLogs();
+      if (this.logs.length > maxLogs) {
+        this.logs = this.logs.slice(-maxLogs);
+      }
+      
+      // Сохраняем versionId для оптимистичной блокировки
+      this.currentVersionId = result.metadata.versionId;
+      
+      // Пересоздаем индексы и сбрасываем кэш размера
+      this.rebuildIndexes();
+      this.logsSizeCache = JSON.stringify(this.logs).length; // Пересчитываем размер после загрузки
+      
+      logDebug(`Successfully loaded ${this.logs.length} logs from file, versionId: ${result.metadata.versionId}, version: ${result.metadata.version}, hash valid: ${result.isValid}`, 'SharedLogStorage.loadFromFile');
+      
+      if (!result.isValid && result.validationMessage) {
+        logDebug(`Validation warning: ${result.validationMessage}`, 'SharedLogStorage.loadFromFile');
+      }
     } catch (error) {
       handleError(error, 'SharedLogStorage.loadFromFile', { filePath: logFilePath });
       this.logs = [];
@@ -297,24 +256,21 @@ export class SharedLogStorage extends EventEmitter {
   
   /**
    * Сохраняет логи в файл с использованием блокировки и атомарной записи
-   * (старая версия для обратной совместимости)
+   * (старая версия для обратной совместимости, использует VersionedLogStore)
    */
   private async saveToFile(logs: RuntimeLog[]): Promise<void> {
     const logFilePath = this.getLogFilePath();
     logDebug(`saveToFile called: saving ${logs.length} logs to ${logFilePath}`, 'SharedLogStorage.saveToFile');
     
     try {
-      await withFileLock(logFilePath, async () => {
-        const jsonContent = JSON.stringify(logs, null, 2);
-        logDebug(`Writing ${jsonContent.length} bytes atomically`, 'SharedLogStorage.saveToFile');
-        await atomicWriteFile(logFilePath, jsonContent, {
-          validateJson: true,
-          encoding: 'utf-8',
-          cleanupOldTempFiles: 3600000, // 1 час
-          mode: 0o644
-        });
-        logDebug(`Successfully saved ${logs.length} logs to ${logFilePath}`, 'SharedLogStorage.saveToFile');
+      await VersionedLogStore.replaceLogs(logFilePath, logs, {
+        incrementVersion: true,
+        useLock: true,
+        lockTimeout: 30000,
+        lockPriority: 'normal'
       });
+      
+      logDebug(`Successfully saved ${logs.length} logs to ${logFilePath} using VersionedLogStore`, 'SharedLogStorage.saveToFile');
     } catch (error) {
       handleError(error, 'SharedLogStorage.saveToFile', {
         filePath: logFilePath,
@@ -337,88 +293,22 @@ export class SharedLogStorage extends EventEmitter {
     
     while (retryCount < maxRetries) {
       try {
-        await withFileLock(logFilePath, async () => {
-          // Загружаем текущее состояние файла
-          let currentVersionId: string | null = null;
-          let existingLogs: RuntimeLog[] = [];
-          
-          if (fs.existsSync(logFilePath)) {
-            const fileContent = fs.readFileSync(logFilePath, 'utf8');
-            if (fileContent.trim()) {
-              try {
-                const parsed = JSON.parse(fileContent);
-                if (parsed && typeof parsed === 'object' && 'versionId' in parsed && 'logs' in parsed) {
-                  // Новый формат с версионированием
-                  currentVersionId = parsed.versionId;
-                  existingLogs = parsed.logs || [];
-                } else {
-                  // Старый формат (просто массив)
-                  existingLogs = parsed;
-                  currentVersionId = null;
-                }
-              } catch (e) {
-                // Если парсинг не удался, используем пустые логи
-                existingLogs = [];
-                currentVersionId = null;
-              }
-            }
-          }
-          
-          // Проверяем оптимистичную блокировку
-          if (this.currentVersionId !== null && currentVersionId !== this.currentVersionId) {
-            // Конфликт версий - нужно объединить логи
-            this.conflictCount++;
-            logDebug(`MVCC conflict detected: expected=${this.currentVersionId}, actual=${currentVersionId}, retry=${retryCount + 1}`, 'SharedLogStorage.saveToFileWithMvcc');
-            
-            // Объединяем логи
-            const mergedLogs = this.mergeLogs(existingLogs, logs);
-            
-            // Обновляем локальное состояние
-            this.logs = mergedLogs;
-            this.successfulMergeCount++;
-            
-            // Генерируем новую версию
-            const newVersionId = this.generateVersionId();
-            const versionedFile: VersionedLogFile = {
-              versionId: newVersionId,
-              timestamp: new Date().toISOString(),
-              logs: mergedLogs
-            };
-            
-            const jsonContent = JSON.stringify(versionedFile, null, 2);
-            await atomicWriteFile(logFilePath, jsonContent, {
-              validateJson: true,
-              encoding: 'utf-8',
-              cleanupOldTempFiles: 3600000,
-              mode: 0o644
-            });
-            
-            // Обновляем текущую версию
-            this.currentVersionId = newVersionId;
-            logDebug(`MVCC conflict resolved: merged ${existingLogs.length} existing logs with ${logs.length} new logs, new versionId=${newVersionId}`, 'SharedLogStorage.saveToFileWithMvcc');
-            return;
-          }
-          
-          // Нет конфликта или это первая запись
-          const newVersionId = this.generateVersionId();
-          const versionedFile: VersionedLogFile = {
-            versionId: newVersionId,
-            timestamp: new Date().toISOString(),
-            logs: logs
-          };
-          
-          const jsonContent = JSON.stringify(versionedFile, null, 2);
-          await atomicWriteFile(logFilePath, jsonContent, {
-            validateJson: true,
-            encoding: 'utf-8',
-            cleanupOldTempFiles: 3600000,
-            mode: 0o644
-          });
-          
-          // Обновляем текущую версию
-          this.currentVersionId = newVersionId;
-          logDebug(`Successfully saved ${logs.length} logs with MVCC, versionId=${newVersionId}`, 'SharedLogStorage.saveToFileWithMvcc');
-        });
+        // Используем mergeLogs из VersionedLogStore для обработки конфликтов
+        const result = await VersionedLogStore.mergeLogs(logFilePath, logs, 'smart');
+        
+        // Обновляем локальное состояние
+        this.logs = result.mergedLogs;
+        
+        if (result.conflictResolved) {
+          this.conflictCount++;
+          this.successfulMergeCount++;
+          logDebug(`MVCC conflict resolved: merged logs, new version: ${result.version}, hash: ${result.hash.substring(0, 16)}...`, 'SharedLogStorage.saveToFileWithMvcc');
+        } else {
+          logDebug(`Successfully saved ${logs.length} logs with MVCC, version: ${result.version}, hash: ${result.hash.substring(0, 16)}...`, 'SharedLogStorage.saveToFileWithMvcc');
+        }
+        
+        // Обновляем текущую версию
+        this.currentVersionId = result.versionId;
         
         // Успешно сохранили, выходим из цикла
         return;
