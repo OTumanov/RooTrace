@@ -5,8 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { decryptObject, getEncryptionKey } from './encryption-utils';
 import { withFileLock } from './file-lock-utils';
-import { atomicWriteFile } from './atomic-write';
-import { RuntimeLog, Hypothesis, LogData, VersionedLogFile } from './types';
+import { RuntimeLog, Hypothesis, LogData } from './types';
 import { handleError, logDebug } from './error-handler';
 import { parseArrayOrDecrypt } from './utils';
 import { WATCHER_CONFIG, STORAGE_CONFIG } from './constants';
@@ -48,51 +47,6 @@ export class SharedLogStorage extends EventEmitter {
     }
     return STORAGE_CONFIG.DEFAULT_MAX_LOGS;
   }
-
-  /**
-   * Генерирует уникальный versionId (timestamp + random)
-   */
-  private generateVersionId(): string {
-    const timestamp = Date.now();
-    const random = Math.random().toString(36).substring(2, 10);
-    return `${timestamp}-${random}`;
-  }
-
-  /**
-   * Объединяет два массива логов, удаляя дубликаты по timestamp и hypothesisId
-   */
-  private mergeLogs(existingLogs: RuntimeLog[], newLogs: RuntimeLog[]): RuntimeLog[] {
-    const mergedMap = new Map<string, RuntimeLog>();
-    
-    // Добавляем существующие логи
-    existingLogs.forEach(log => {
-      const key = `${log.timestamp}-${log.hypothesisId}`;
-      mergedMap.set(key, log);
-    });
-    
-    // Добавляем новые логи (перезаписывают старые с тем же ключом)
-    newLogs.forEach(log => {
-      const key = `${log.timestamp}-${log.hypothesisId}`;
-      mergedMap.set(key, log);
-    });
-    
-    // Сортируем по timestamp
-    return Array.from(mergedMap.values()).sort((a, b) =>
-      new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    );
-  }
-
-  /**
-   * Получает метрики MVCC для мониторинга
-   */
-  getMvccMetrics(): { conflictCount: number; successfulMergeCount: number; currentVersionId: string | null } {
-    return {
-      conflictCount: this.conflictCount,
-      successfulMergeCount: this.successfulMergeCount,
-      currentVersionId: this.currentVersionId
-    };
-  }
-
   // Индексы для быстрого поиска
   private hypothesisIndex: Map<string, number[]> = new Map();
   private timestampIndex: Map<number, number[]> = new Map();
@@ -104,11 +58,6 @@ export class SharedLogStorage extends EventEmitter {
   private isWatcherActive: boolean = false;
   // Debounce таймер для watcher'а
   private watcherDebounceTimer: NodeJS.Timeout | null = null;
-
-  // MVCC поля для версионирования
-  private currentVersionId: string | null = null;
-  private conflictCount: number = 0;
-  private successfulMergeCount: number = 0;
 
   private constructor() {
     super();
@@ -196,7 +145,7 @@ export class SharedLogStorage extends EventEmitter {
   }
   
   /**
-   * Загружает логи из файла с использованием блокировки и поддержкой MVCC
+   * Загружает логи из файла с использованием блокировки
    */
   private async loadFromFile(): Promise<void> {
     const logFilePath = this.getLogFilePath();
@@ -206,7 +155,6 @@ export class SharedLogStorage extends EventEmitter {
         if (!fs.existsSync(logFilePath)) {
           logDebug(`File does not exist: ${logFilePath}, initializing empty logs`, 'SharedLogStorage.loadFromFile');
           this.logs = [];
-          this.currentVersionId = null;
           this.rebuildIndexes();
           return;
         }
@@ -217,39 +165,21 @@ export class SharedLogStorage extends EventEmitter {
         if (!fileContent.trim()) {
           logDebug('File is empty or whitespace only, initializing empty logs', 'SharedLogStorage.loadFromFile');
           this.logs = [];
-          this.currentVersionId = null;
           this.rebuildIndexes();
           return;
         }
         
         let logs: RuntimeLog[] = [];
-        let versionId: string | null = null;
         
-        try {
-          // Пытаемся распарсить как VersionedLogFile
-          const parsed = JSON.parse(fileContent);
-          if (parsed && typeof parsed === 'object' && 'versionId' in parsed && 'logs' in parsed) {
-            // Это новый формат с версионированием
-            versionId = parsed.versionId;
-            logs = parsed.logs || [];
-            logDebug(`Loaded versioned file, versionId: ${versionId}, logs: ${logs.length}`, 'SharedLogStorage.loadFromFile');
-          } else {
-            // Старый формат (просто массив)
-            logs = parsed;
-            versionId = null;
-            logDebug(`Loaded legacy format file (no versionId), logs: ${logs.length}`, 'SharedLogStorage.loadFromFile');
-          }
-        } catch (parseError) {
-          // Если JSON парсинг не удался, пробуем дешифровку через parseArrayOrDecrypt
-          logs = parseArrayOrDecrypt<any>(fileContent, []);
-          versionId = null;
-          logDebug(`Used parseArrayOrDecrypt fallback, logs: ${logs.length}`, 'SharedLogStorage.loadFromFile');
+        // Используем общую утилиту для парсинга массива с fallback на дешифровку
+        logs = parseArrayOrDecrypt<any>(fileContent, []);
+        if (logs.length > 0) {
+          logDebug(`Loaded ${logs.length} logs from file`, 'SharedLogStorage.loadFromFile');
         }
         
         // Проверяем, что это массив
         if (!Array.isArray(logs)) {
           this.logs = [];
-          this.currentVersionId = null;
           this.rebuildIndexes();
           return;
         }
@@ -258,9 +188,9 @@ export class SharedLogStorage extends EventEmitter {
         this.logs = [];
         for (const logEntry of logs) {
           // Проверяем формат лога
-          if (logEntry && typeof logEntry === 'object' &&
-              'timestamp' in logEntry &&
-              'hypothesisId' in logEntry &&
+          if (logEntry && typeof logEntry === 'object' && 
+              'timestamp' in logEntry && 
+              'hypothesisId' in logEntry && 
               'context' in logEntry) {
             const log: RuntimeLog = {
               timestamp: String(logEntry.timestamp),
@@ -279,25 +209,20 @@ export class SharedLogStorage extends EventEmitter {
           this.logs = this.logs.slice(-maxLogs);
         }
         
-        // Сохраняем versionId для оптимистичной блокировки
-        this.currentVersionId = versionId;
-        
         // Пересоздаем индексы и сбрасываем кэш размера
         this.rebuildIndexes();
         this.logsSizeCache = JSON.stringify(this.logs).length; // Пересчитываем размер после загрузки
-        logDebug(`Successfully loaded ${this.logs.length} logs from file, versionId: ${versionId || 'none'}`, 'SharedLogStorage.loadFromFile');
+        logDebug(`Successfully loaded ${this.logs.length} logs from file`, 'SharedLogStorage.loadFromFile');
       });
     } catch (error) {
       handleError(error, 'SharedLogStorage.loadFromFile', { filePath: logFilePath });
       this.logs = [];
-      this.currentVersionId = null;
       this.rebuildIndexes();
     }
   }
   
   /**
-   * Сохраняет логи в файл с использованием блокировки и атомарной записи
-   * (старая версия для обратной совместимости)
+   * Сохраняет логи в файл с использованием блокировки
    */
   private async saveToFile(logs: RuntimeLog[]): Promise<void> {
     const logFilePath = this.getLogFilePath();
@@ -305,140 +230,23 @@ export class SharedLogStorage extends EventEmitter {
     
     try {
       await withFileLock(logFilePath, async () => {
+        // Создаем директорию если её нет
+        const dir = path.dirname(logFilePath);
+        if (!fs.existsSync(dir)) {
+          logDebug(`Creating directory: ${dir}`, 'SharedLogStorage.saveToFile');
+          fs.mkdirSync(dir, { recursive: true });
+        }
         const jsonContent = JSON.stringify(logs, null, 2);
-        logDebug(`Writing ${jsonContent.length} bytes atomically`, 'SharedLogStorage.saveToFile');
-        await atomicWriteFile(logFilePath, jsonContent, {
-          validateJson: true,
-          encoding: 'utf-8',
-          cleanupOldTempFiles: 3600000, // 1 час
-          mode: 0o644
-        });
+        logDebug(`Writing ${jsonContent.length} bytes to file`, 'SharedLogStorage.saveToFile');
+        fs.writeFileSync(logFilePath, jsonContent, 'utf8');
         logDebug(`Successfully saved ${logs.length} logs to ${logFilePath}`, 'SharedLogStorage.saveToFile');
       });
     } catch (error) {
-      handleError(error, 'SharedLogStorage.saveToFile', {
+      handleError(error, 'SharedLogStorage.saveToFile', { 
         filePath: logFilePath,
-        logsCount: logs.length
+        logsCount: logs.length 
       });
       throw error; // Пробрасываем ошибку дальше
-    }
-  }
-
-  /**
-   * Сохраняет логи в файл с использованием MVCC (оптимистичная блокировка)
-   * @param logs - логи для сохранения
-   * @param maxRetries - максимальное количество попыток при конфликте (по умолчанию 3)
-   */
-  private async saveToFileWithMvcc(logs: RuntimeLog[], maxRetries: number = 3): Promise<void> {
-    const logFilePath = this.getLogFilePath();
-    logDebug(`saveToFileWithMvcc called: saving ${logs.length} logs to ${logFilePath}, maxRetries=${maxRetries}`, 'SharedLogStorage.saveToFileWithMvcc');
-    
-    let retryCount = 0;
-    
-    while (retryCount < maxRetries) {
-      try {
-        await withFileLock(logFilePath, async () => {
-          // Загружаем текущее состояние файла
-          let currentVersionId: string | null = null;
-          let existingLogs: RuntimeLog[] = [];
-          
-          if (fs.existsSync(logFilePath)) {
-            const fileContent = fs.readFileSync(logFilePath, 'utf8');
-            if (fileContent.trim()) {
-              try {
-                const parsed = JSON.parse(fileContent);
-                if (parsed && typeof parsed === 'object' && 'versionId' in parsed && 'logs' in parsed) {
-                  // Новый формат с версионированием
-                  currentVersionId = parsed.versionId;
-                  existingLogs = parsed.logs || [];
-                } else {
-                  // Старый формат (просто массив)
-                  existingLogs = parsed;
-                  currentVersionId = null;
-                }
-              } catch (e) {
-                // Если парсинг не удался, используем пустые логи
-                existingLogs = [];
-                currentVersionId = null;
-              }
-            }
-          }
-          
-          // Проверяем оптимистичную блокировку
-          if (this.currentVersionId !== null && currentVersionId !== this.currentVersionId) {
-            // Конфликт версий - нужно объединить логи
-            this.conflictCount++;
-            logDebug(`MVCC conflict detected: expected=${this.currentVersionId}, actual=${currentVersionId}, retry=${retryCount + 1}`, 'SharedLogStorage.saveToFileWithMvcc');
-            
-            // Объединяем логи
-            const mergedLogs = this.mergeLogs(existingLogs, logs);
-            
-            // Обновляем локальное состояние
-            this.logs = mergedLogs;
-            this.successfulMergeCount++;
-            
-            // Генерируем новую версию
-            const newVersionId = this.generateVersionId();
-            const versionedFile: VersionedLogFile = {
-              versionId: newVersionId,
-              timestamp: new Date().toISOString(),
-              logs: mergedLogs
-            };
-            
-            const jsonContent = JSON.stringify(versionedFile, null, 2);
-            await atomicWriteFile(logFilePath, jsonContent, {
-              validateJson: true,
-              encoding: 'utf-8',
-              cleanupOldTempFiles: 3600000,
-              mode: 0o644
-            });
-            
-            // Обновляем текущую версию
-            this.currentVersionId = newVersionId;
-            logDebug(`MVCC conflict resolved: merged ${existingLogs.length} existing logs with ${logs.length} new logs, new versionId=${newVersionId}`, 'SharedLogStorage.saveToFileWithMvcc');
-            return;
-          }
-          
-          // Нет конфликта или это первая запись
-          const newVersionId = this.generateVersionId();
-          const versionedFile: VersionedLogFile = {
-            versionId: newVersionId,
-            timestamp: new Date().toISOString(),
-            logs: logs
-          };
-          
-          const jsonContent = JSON.stringify(versionedFile, null, 2);
-          await atomicWriteFile(logFilePath, jsonContent, {
-            validateJson: true,
-            encoding: 'utf-8',
-            cleanupOldTempFiles: 3600000,
-            mode: 0o644
-          });
-          
-          // Обновляем текущую версию
-          this.currentVersionId = newVersionId;
-          logDebug(`Successfully saved ${logs.length} logs with MVCC, versionId=${newVersionId}`, 'SharedLogStorage.saveToFileWithMvcc');
-        });
-        
-        // Успешно сохранили, выходим из цикла
-        return;
-      } catch (error) {
-        retryCount++;
-        if (retryCount >= maxRetries) {
-          handleError(error, 'SharedLogStorage.saveToFileWithMvcc', {
-            filePath: logFilePath,
-            logsCount: logs.length,
-            retryCount,
-            maxRetries
-          });
-          throw error;
-        }
-        
-        // Ждем перед повторной попыткой (экспоненциальная backoff)
-        const delay = Math.min(100 * Math.pow(2, retryCount), 1000);
-        logDebug(`Retry ${retryCount}/${maxRetries} after error, waiting ${delay}ms`, 'SharedLogStorage.saveToFileWithMvcc');
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
     }
   }
   
@@ -571,8 +379,8 @@ export class SharedLogStorage extends EventEmitter {
         this.rebuildIndexes();
       }
       
-      // БЕЗОТКАЗНОСТЬ: Сразу сбрасываем на диск (режим Extension - Writer) с MVCC
-      await this.saveToFileWithMvcc(this.logs);
+      // БЕЗОТКАЗНОСТЬ: Сразу сбрасываем на диск (режим Extension - Writer)
+      await this.saveToFile(this.logs);
       
       logDebug(`Added log: ${log.hypothesisId} - ${log.context}`, 'SharedLogStorage.addLog');
       
@@ -762,8 +570,8 @@ export class SharedLogStorage extends EventEmitter {
     this.hypotheses.forEach((hypothesis, key) => {
       this.hypotheses.set(key, { ...hypothesis, status: 'pending' });
     });
-    // БЕЗОТКАЗНОСТЬ: Обнуляем файл через блокировку с MVCC
-    await this.saveToFileWithMvcc([]);
+    // БЕЗОТКАЗНОСТЬ: Обнуляем файл через блокировку
+    await this.saveToFile([]);
   }
 
   /**

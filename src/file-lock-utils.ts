@@ -2,29 +2,15 @@
  * Утилита для файловых блокировок с очередью операций
  * Предотвращает race conditions при одновременном доступе к файлам
  * 
+ * Использует AsyncMutex для атомарности и гарантии FIFO.
+ * 
  * Улучшения:
  * - Таймауты для предотвращения зависаний
  * - Приоритеты операций
  * - Автоматическая очистка зависших операций
  */
 
-interface QueuedOperation {
-  operation: () => Promise<void>;
-  priority: 'high' | 'normal' | 'low';
-  timeout: number;
-  timestamp: number;
-  resolve: (value: any) => void;
-  reject: (error: any) => void;
-  timeoutHandle?: NodeJS.Timeout;
-}
-
-interface FileLock {
-  queue: QueuedOperation[];
-  processing: boolean;
-  timeout: NodeJS.Timeout | null;
-}
-
-const fileLocks: Map<string, FileLock> = new Map();
+import { globalMutexRegistry, AsyncMutex } from './async-lock';
 
 // Константы по умолчанию
 const DEFAULT_TIMEOUT_MS = 30000; // 30 секунд
@@ -49,91 +35,17 @@ export async function withFileLock<T>(
 ): Promise<T> {
   const timeout = options?.timeout ?? DEFAULT_TIMEOUT_MS;
   const priority = options?.priority ?? DEFAULT_PRIORITY;
+
+  const mutex = globalMutexRegistry.getMutex(filePath, timeout);
   
-  // Получаем или создаем блокировку для файла
-  let lock = fileLocks.get(filePath);
-  if (!lock) {
-    lock = { queue: [], processing: false, timeout: null };
-    fileLocks.set(filePath, lock);
-  }
-
-  // Создаем Promise для текущей операции
-  return new Promise<T>((resolve, reject) => {
-    // Создаем таймаут для операции
-    const timeoutHandle = setTimeout(() => {
-      const error = new Error(`File lock operation timeout after ${timeout}ms for file: ${filePath}`);
-      reject(error);
-      // Удаляем операцию из очереди если она еще там
-      const index = lock.queue.findIndex(op => op.timeoutHandle === timeoutHandle);
-      if (index !== -1) {
-        lock.queue.splice(index, 1);
-      }
-      // Продолжаем обработку очереди
-      processNextInQueue(lock, filePath);
-    }, timeout);
-
-    const queuedOperation: QueuedOperation = {
-      operation: async () => {
-        clearTimeout(timeoutHandle);
-        try {
-          const result = await operation();
-          resolve(result);
-        } catch (error) {
-          reject(error);
-        } finally {
-          processNextInQueue(lock, filePath);
-        }
-      },
-      priority,
-      timeout,
-      timestamp: Date.now(),
-      resolve,
-      reject,
-      timeoutHandle
-    };
-
-    // Добавляем операцию в очередь с учетом приоритета (сортировка: high > normal > low)
-    const priorityOrder = { 'high': 3, 'normal': 2, 'low': 1 };
-    const insertIndex = lock.queue.findIndex(op => 
-      priorityOrder[op.priority] < priorityOrder[priority]
-    );
-    
-    if (insertIndex === -1) {
-      // Нет операций с меньшим приоритетом - добавляем в конец
-      lock.queue.push(queuedOperation);
-    } else {
-      // Вставляем перед первой операцией с меньшим приоритетом
-      lock.queue.splice(insertIndex, 0, queuedOperation);
+  try {
+    return await mutex.run(operation, { timeout, priority });
+  } catch (error) {
+    // Если ошибка таймаута, выбрасываем более информативное сообщение
+    if (error instanceof Error && error.message.includes('AsyncMutex timeout')) {
+      throw new Error(`File lock operation timeout after ${timeout}ms for file: ${filePath}`);
     }
-
-    // Если нет активной операции, запускаем обработку очереди
-    if (!lock.processing) {
-      processNextInQueue(lock, filePath);
-    }
-  });
-}
-
-/**
- * Обрабатывает следующую операцию в очереди
- */
-function processNextInQueue(lock: FileLock, filePath: string): void {
-  lock.processing = false;
-  
-  if (lock.queue.length > 0) {
-    const nextOperation = lock.queue.shift()!;
-    lock.processing = true;
-    // Очищаем таймаут операции при запуске (защита от утечек)
-    if (nextOperation.timeoutHandle) {
-      clearTimeout(nextOperation.timeoutHandle);
-    }
-    nextOperation.operation();
-  } else {
-    // Если очередь пуста, удаляем блокировку для экономии памяти
-    if (lock.timeout) {
-      clearTimeout(lock.timeout);
-      lock.timeout = null;
-    }
-    fileLocks.delete(filePath);
+    throw error;
   }
 }
 
@@ -141,5 +53,21 @@ function processNextInQueue(lock: FileLock, filePath: string): void {
  * Очищает все блокировки (используется для тестов)
  */
 export function clearAllLocks(): void {
-  fileLocks.clear();
+  globalMutexRegistry.clear();
+}
+
+/**
+ * Возвращает количество ожидающих операций для указанного файла (для отладки)
+ */
+export function getQueueLength(filePath: string): number {
+  const mutex = globalMutexRegistry.getMutex(filePath);
+  return mutex.getQueueLength();
+}
+
+/**
+ * Проверяет, заблокирован ли файл в данный момент (для отладки)
+ */
+export function isFileLocked(filePath: string): boolean {
+  const mutex = globalMutexRegistry.getMutex(filePath);
+  return mutex.isLocked();
 }

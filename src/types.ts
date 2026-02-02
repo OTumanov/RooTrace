@@ -43,6 +43,15 @@ export interface RuntimeLog {
 }
 
 /**
+ * Версионированный файл логов для MVCC синхронизации
+ */
+export interface VersionedLogFile {
+  versionId: string;
+  timestamp: string;
+  logs: RuntimeLog[];
+}
+
+/**
  * Гипотеза для отладки
  */
 export interface Hypothesis {
