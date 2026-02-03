@@ -1,0 +1,343 @@
+/**
+ * HTTP сервер для RooTrace
+ * 
+ * Обслуживает:
+ * - POST /logs - получение логов от клиентов
+ * - GET /health - проверка здоровья сервера
+ * - GET /logs - получение сохранённых логов
+ * - GET /diagnostics - получение диагностики VS Code
+ */
+
+import * as http from 'http';
+import { logInfo, handleError, handleWarning } from '../error-handler';
+import { metricsCollector } from '../metrics';
+import { getDiagnosticsForMCP } from '../diagnostics-handler';
+import { RuntimeLog } from '../types';
+
+export interface HTTPServerConfig {
+  port: number;
+  host: string;
+  outputChannel?: { appendLine: (msg: string) => void };
+}
+
+interface LogDataRequest {
+  hypothesisId?: string;
+  message?: string;
+  state?: any;
+}
+
+interface RateLimit {
+  count: number;
+  resetTime: number;
+}
+
+const rateLimitMap = new Map<string, RateLimit>();
+const RATE_LIMIT_CONFIG = {
+  MAX_REQUESTS: 1000,
+  WINDOW_MS: 60000 // 1 minute
+};
+
+/**
+ * Проверяет rate limit для IP адреса
+ */
+function checkRateLimit(clientIP: string): boolean {
+  const now = Date.now();
+  const limit = rateLimitMap.get(clientIP);
+
+  if (!limit || now > limit.resetTime) {
+    rateLimitMap.set(clientIP, {
+      count: 1,
+      resetTime: now + RATE_LIMIT_CONFIG.WINDOW_MS
+    });
+    return true;
+  }
+
+  limit.count++;
+  return limit.count <= RATE_LIMIT_CONFIG.MAX_REQUESTS;
+}
+
+/**
+ * Получает IP клиента из запроса
+ */
+function getClientIP(req: http.IncomingMessage): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string') {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.socket.remoteAddress || 'unknown';
+}
+
+/**
+ * Обработчик для endpoint'а /health
+ */
+async function handleHealth(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  startTime: number
+): Promise<void> {
+  try {
+    const healthStatus = await metricsCollector.getHealthStatus(
+      null,
+      true // server is running
+    );
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(healthStatus));
+    metricsCollector.recordRequest(Date.now() - startTime);
+  } catch (error) {
+    handleError(error, 'HTTPServer.handleHealth');
+    metricsCollector.recordError();
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'error', message: 'Health check failed' }));
+  }
+}
+
+/**
+ * Обработчик для endpoint'а POST /logs
+ */
+async function handlePostLogs(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  startTime: number,
+  callbacks: {
+    onLog: (hypothesisId: string, context: string, state: any) => Promise<void>;
+    getLogsCount: () => Promise<number>;
+    outputChannel?: { appendLine: (msg: string) => void };
+  }
+): Promise<void> {
+  let body = '';
+
+  req.on('data', (chunk: Buffer | string) => {
+    body += chunk.toString();
+  });
+
+  req.on('end', async () => {
+    try {
+      callbacks.outputChannel?.appendLine(`[HTTP SERVER] Request body received: ${body.length} bytes`);
+
+      const data = JSON.parse(body) as LogDataRequest;
+      callbacks.outputChannel?.appendLine(
+        `[HTTP SERVER] Parsed JSON: hypothesisId=${data.hypothesisId}, message=${data.message}`
+      );
+
+      if (data.hypothesisId && data.message) {
+        const context = data.message || 'Debug data received';
+        const state = data.state || {};
+
+        callbacks.outputChannel?.appendLine(
+          `[HTTP SERVER] Received log: hypothesisId=${data.hypothesisId}, message=${context}`
+        );
+        
+        await callbacks.onLog(data.hypothesisId, context, state);
+
+        const logsCount = await callbacks.getLogsCount();
+        callbacks.outputChannel?.appendLine(`[HTTP SERVER] Logs count after write: ${logsCount}`);
+      }
+
+      // Special handling for SMOKE_TEST
+      if (
+        data.hypothesisId === 'SMOKE_TEST' ||
+        (data.message && data.message.includes('SMOKE_TEST'))
+      ) {
+        const smokeTestResponse = {
+          status: 'success',
+          message: 'SMOKE_TEST_VERIFIED',
+          received: true,
+          hypothesisId: data.hypothesisId || 'SMOKE_TEST',
+          timestamp: new Date().toISOString(),
+          serverInfo: {
+            port: 'dynamic',
+            host: 'localhost',
+            rooTraceVersion: '1.0.0'
+          }
+        };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(smokeTestResponse));
+        callbacks.outputChannel?.appendLine(`[HTTP SERVER] SMOKE_TEST verified`);
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'success', message: 'Data received' }));
+      }
+
+      metricsCollector.recordRequest(Date.now() - startTime);
+    } catch (error) {
+      handleError(error, 'HTTPServer.handlePostLogs');
+      metricsCollector.recordError();
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'error', message: 'Invalid JSON' }));
+    }
+  });
+}
+
+/**
+ * Обработчик для endpoint'а GET /logs
+ */
+async function handleGetLogs(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  startTime: number,
+  callbacks: {
+    getLogs: () => Promise<string[]>;
+  }
+): Promise<void> {
+  try {
+    const logs = await callbacks.getLogs();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'success', logs: logs }));
+    metricsCollector.recordRequest(Date.now() - startTime);
+  } catch (error) {
+    handleError(error, 'HTTPServer.handleGetLogs');
+    metricsCollector.recordError();
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'error', message: 'Failed to get logs' }));
+  }
+}
+
+/**
+ * Обработчик для endpoint'а GET /diagnostics
+ */
+async function handleDiagnostics(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  startTime: number
+): Promise<void> {
+  try {
+    const url = new URL(req.url || '/', `http://${req.headers.host}`);
+    const filePath = url.searchParams.get('file');
+
+    const diagnostics = getDiagnosticsForMCP(filePath || undefined);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        status: 'success',
+        diagnostics: diagnostics,
+        count: diagnostics.length
+      })
+    );
+    metricsCollector.recordRequest(Date.now() - startTime);
+  } catch (error) {
+    handleError(error, 'HTTPServer.handleDiagnostics');
+    metricsCollector.recordError();
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'error', message: 'Failed to get diagnostics' }));
+  }
+}
+
+/**
+ * Создаёт HTTP сервер
+ */
+export function createHTTPServer(callbacks: {
+  onLog: (hypothesisId: string, context: string, state: any) => Promise<void>;
+  getLogsCount: () => Promise<number>;
+  getLogs: () => Promise<string[]>;
+  outputChannel?: { appendLine: (msg: string) => void };
+}): http.Server {
+  const server = http.createServer(async (req: http.IncomingMessage, res: http.ServerResponse) => {
+    const startTime = Date.now();
+
+    // Rate limiting
+    const clientIP = getClientIP(req);
+    if (!checkRateLimit(clientIP)) {
+      metricsCollector.recordError();
+      res.writeHead(429, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'error', message: 'Rate limit exceeded' }));
+      return;
+    }
+
+    // CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+    // OPTIONS request
+    if (req.method === 'OPTIONS') {
+      res.writeHead(200);
+      res.end();
+      return;
+    }
+
+    // Log request
+    callbacks.outputChannel?.appendLine(
+      `[HTTP SERVER] ${req.method} ${req.url} from ${req.socket.remoteAddress || 'unknown'}`
+    );
+
+    // Route handlers
+    if (req.method === 'GET' && req.url === '/health') {
+      await handleHealth(req, res, startTime);
+    } else if (req.method === 'POST' && req.url === '/') {
+      await handlePostLogs(req, res, startTime, callbacks);
+    } else if (req.method === 'GET' && req.url === '/logs') {
+      await handleGetLogs(req, res, startTime, callbacks);
+    } else if (req.method === 'GET' && req.url?.startsWith('/diagnostics')) {
+      await handleDiagnostics(req, res, startTime);
+    } else {
+      // 404
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'error', message: 'Route not found' }));
+      metricsCollector.recordRequest(Date.now() - startTime);
+    }
+  });
+
+  return server;
+}
+
+/**
+ * Запускает сервер на указанном порту
+ */
+export function startHTTPServer(
+  server: http.Server,
+  port: number,
+  onListening?: (actualPort: number) => void,
+  onError?: (error: Error) => void
+): void {
+  const tryListen = (attemptPort: number) => {
+    server.listen(attemptPort, 'localhost', () => {
+      const address = server.address();
+      if (address && typeof address !== 'string') {
+        const actualPort = address.port;
+        logInfo(
+          `HTTP server started on port ${actualPort}${
+            attemptPort !== actualPort ? ` (configured port ${attemptPort} was busy)` : ''
+          }`,
+          'HTTPServer.start'
+        );
+        onListening?.(actualPort);
+      }
+    });
+  };
+
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE' && port !== 0) {
+      handleWarning(`Port ${port} is busy, trying random port...`, 'HTTPServer.start');
+      tryListen(0);
+    } else {
+      handleError(err, 'HTTPServer.start');
+      onError?.(err);
+    }
+  });
+
+  tryListen(port);
+}
+
+/**
+ * Останавливает сервер
+ */
+export function stopHTTPServer(server: http.Server | null): Promise<void> {
+  return new Promise((resolve) => {
+    if (!server) {
+      resolve();
+      return;
+    }
+
+    server.close(() => {
+      logInfo('HTTP server stopped', 'HTTPServer.stop');
+      resolve();
+    });
+
+    // Force close after 5 seconds
+    setTimeout(() => {
+      (server as any).closeAllConnections?.();
+      resolve();
+    }, 5000);
+  });
+}
