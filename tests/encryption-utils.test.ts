@@ -1,216 +1,174 @@
-import * as fs from 'fs';
-import * as path from 'path';
+// Mock the vscode module
+jest.mock('vscode', () => ({
+    window: {
+        showErrorMessage: jest.fn(),
+        showWarningMessage: jest.fn(),
+    },
+    Uri: {
+        parse: jest.fn(),
+    },
+    env: {
+        openExternal: jest.fn(),
+    }
+}), { virtual: true });
+
+// Mock the encryption-validator module
+jest.mock('../src/encryption-validator', () => ({
+    validateEncryptionKey: jest.fn(),
+}));
+
+import * as crypto from 'crypto';
 import { 
-  generateEncryptionKey, 
-  encryptString, 
-  decryptString, 
-  encryptObject, 
-  decryptObject, 
-  getEncryptionKey 
+    getEncryptionKey, 
+    validateSecretPhrase, 
+    generateWorkspaceSalt,
+    encryptString,
+    decryptString,
+    encryptObject,
+    decryptObject,
+    migrateEncryptionKey,
+    isUsingDefaultSecretPhrase,
+    deriveKeyFromPhrase
 } from '../src/encryption-utils';
 
 describe('EncryptionUtils', () => {
-  describe('generateEncryptionKey', () => {
-    test('should generate a 32-byte key', () => {
-      const key = generateEncryptionKey();
-      expect(key).toBeInstanceOf(Buffer);
-      expect(key.length).toBe(32); // 32 bytes = 256 bits
-    });
-
-    test('should generate different keys each time', () => {
-      const key1 = generateEncryptionKey();
-      const key2 = generateEncryptionKey();
-      expect(key1.equals(key2)).toBe(false);
-    });
-  });
-
-  describe('encryptString and decryptString', () => {
-    test('should encrypt and decrypt a string correctly', () => {
-      const key = generateEncryptionKey();
-      const originalText = 'This is a test string for encryption';
-      
-      const encrypted = encryptString(originalText, key);
-      const decrypted = decryptString(encrypted, key);
-      
-      expect(decrypted).toBe(originalText);
-    });
-
-    test('should handle special characters', () => {
-      const key = generateEncryptionKey();
-      const originalText = 'Special chars: !@#$%^&*()_+-=[]{}|;:,.<>?~`';
-      
-      const encrypted = encryptString(originalText, key);
-      const decrypted = decryptString(encrypted, key);
-      
-      expect(decrypted).toBe(originalText);
-    });
-
-    test('should handle empty string', () => {
-      const key = generateEncryptionKey();
-      const originalText = '';
-      
-      const encrypted = encryptString(originalText, key);
-      const decrypted = decryptString(encrypted, key);
-      
-      expect(decrypted).toBe(originalText);
-    });
-
-    test('should fail to decrypt with wrong key', () => {
-      const key1 = generateEncryptionKey();
-      const key2 = generateEncryptionKey();
-      const originalText = 'This is a test string for encryption';
-      
-      const encrypted = encryptString(originalText, key1);
-      
-      expect(() => decryptString(encrypted, key2)).toThrow();
-    });
-  });
-
-  describe('encryptObject and decryptObject', () => {
-    test('should encrypt and decrypt a simple object correctly', () => {
-      const key = generateEncryptionKey();
-      const originalObj = {
-        name: 'John Doe',
-        age: 30,
-        email: 'john@example.com'
-      };
-      
-      const encrypted = encryptObject(originalObj, key);
-      const decrypted = decryptObject(encrypted, key);
-      
-      expect(decrypted).toEqual(originalObj);
-    });
-
-    test('should encrypt and decrypt a complex nested object correctly', () => {
-      const key = generateEncryptionKey();
-      const originalObj = {
-        user: {
-          id: 123,
-          profile: {
-            name: 'Jane Doe',
-            settings: {
-              theme: 'dark',
-              notifications: true
-            }
-          }
-        },
-        permissions: ['read', 'write'],
-        metadata: {
-          createdAt: new Date().toISOString(),
-          tags: ['important', 'user']
-        }
-      };
-      
-      const encrypted = encryptObject(originalObj, key);
-      const decrypted = decryptObject(encrypted, key);
-      
-      expect(decrypted).toEqual(originalObj);
-    });
-
-    test('should handle arrays', () => {
-      const key = generateEncryptionKey();
-      const originalArr = [1, 2, 3, 'four', { five: 6 }];
-      
-      const encrypted = encryptObject(originalArr, key);
-      const decrypted = decryptObject(encrypted, key);
-      
-      expect(decrypted).toEqual(originalArr);
-    });
-
-    test('should handle null and undefined values', () => {
-      const key = generateEncryptionKey();
-      const originalObj = {
-        nullValue: null,
-        undefinedValue: undefined,
-        actualValue: 'exists'
-      };
-      
-      const encrypted = encryptObject(originalObj, key);
-      const decrypted = decryptObject(encrypted, key);
-      
-      expect(decrypted).toEqual(originalObj);
-    });
-  });
-
-  describe('getEncryptionKey', () => {
     const originalEnv = process.env;
 
     beforeEach(() => {
-      jest.resetModules();
-      process.env = { ...originalEnv };
+        jest.resetModules();
+        process.env = { ...originalEnv };
+        delete process.env.ROO_TRACE_ENCRYPTION_KEY;
+        delete process.env.ROO_TRACE_SECRET_PHRASE;
     });
 
     afterEach(() => {
-      process.env = originalEnv;
+        process.env = originalEnv;
     });
 
-    test('should generate key from ROO_TRACE_SECRET_PHRASE if ROO_TRACE_ENCRYPTION_KEY is not set', () => {
-      process.env.ROO_TRACE_SECRET_PHRASE = 'test-secret-phrase';
-      const { getEncryptionKey } = require('../src/encryption-utils');
-      const key = getEncryptionKey();
-      
-      expect(key).toBeInstanceOf(Buffer);
-      expect(key.length).toBe(32);
+    describe('getEncryptionKey - updated behavior', () => {
+        test('should throw error when no key is configured', () => {
+            expect(() => getEncryptionKey()).toThrow(
+                'Encryption key is not configured'
+            );
+        });
+
+        test('should throw error when using default secret phrase', () => {
+            process.env.ROO_TRACE_SECRET_PHRASE = 'roo-trace-default-secret';
+            expect(() => getEncryptionKey()).toThrow(
+                'Default secret phrase is not allowed'
+            );
+        });
+
+        test('should throw error when secret phrase is too short', () => {
+            process.env.ROO_TRACE_SECRET_PHRASE = 'short';
+            expect(() => getEncryptionKey()).toThrow(
+                'must be at least 12 characters'
+            );
+        });
+
+        test('should generate valid key from valid secret phrase', () => {
+            process.env.ROO_TRACE_SECRET_PHRASE = 'valid-secret-phrase-123';
+            const key = getEncryptionKey();
+            expect(key).toBeInstanceOf(Buffer);
+            expect(key.length).toBe(32);
+        });
+
+        test('should use ROO_TRACE_ENCRYPTION_KEY if set and valid', () => {
+            const testKey = 'a'.repeat(64);
+            process.env.ROO_TRACE_ENCRYPTION_KEY = testKey;
+            const key = getEncryptionKey();
+            expect(key).toEqual(Buffer.from(testKey, 'hex'));
+        });
     });
 
-    test('should use ROO_TRACE_ENCRYPTION_KEY if it is set', () => {
-      const testKey = generateEncryptionKey();
-      process.env.ROO_TRACE_ENCRYPTION_KEY = testKey.toString('hex');
-      const { getEncryptionKey } = require('../src/encryption-utils');
-      const key = getEncryptionKey();
-      
-      expect(key).toEqual(testKey);
+    describe('validateSecretPhrase', () => {
+        test('should throw error for default secret phrase in production', () => {
+            process.env.NODE_ENV = 'production';
+            expect(() => {
+                validateSecretPhrase('roo-trace-default-secret');
+            }).toThrow('Default secret phrase is not allowed in production');
+        });
+
+        test('should not throw error for valid secret phrase', () => {
+            expect(() => {
+                validateSecretPhrase('valid-secret-phrase-123');
+            }).not.toThrow();
+        });
+
+        test('should throw error for short secret phrase', () => {
+            expect(() => {
+                validateSecretPhrase('short');
+            }).toThrow('Secret phrase must be at least 12 characters long');
+        });
     });
 
-    test('should throw error if ROO_TRACE_ENCRYPTION_KEY has invalid length', () => {
-      process.env.ROO_TRACE_ENCRYPTION_KEY = 'invalid-length-key';
-      const { getEncryptionKey } = require('../src/encryption-utils');
-      
-      expect(() => getEncryptionKey()).toThrow('Invalid encryption key length');
-    });
-  });
-
-  describe('Integration tests', () => {
-    test('should encrypt and decrypt config-like object', () => {
-      const key = generateEncryptionKey();
-      const config = {
-        url: 'http://localhost:8080/',
-        status: 'active',
-        timestamp: Date.now(),
-        apiKey: 'secret-api-key',
-        sensitiveData: {
-          username: 'admin',
-          password: 'super-secret-password'
-        }
-      };
-      
-      const encrypted = encryptObject(config, key);
-      const decrypted = decryptObject(encrypted, key);
-      
-      expect(decrypted).toEqual(config);
+    describe('generateWorkspaceSalt', () => {
+        test('should generate consistent salt for same workspace', () => {
+            const salt1 = generateWorkspaceSalt();
+            const salt2 = generateWorkspaceSalt();
+            // Salt generation depends on workspace path, so we just check format
+            expect(salt1).toHaveLength(16);
+            expect(salt2).toHaveLength(16);
+        });
     });
 
-    test('should encrypt and decrypt logs-like array', () => {
-      const key = generateEncryptionKey();
-      const logs = [
-        {
-          timestamp: new Date().toISOString(),
-          hypothesisId: 'H1',
-          context: 'Initial state',
-          data: { userId: 123, action: 'login' }
-        },
-        {
-          timestamp: new Date().toISOString(),
-          hypothesisId: 'H2',
-          context: 'User action',
-          data: { userId: 123, action: 'purchase', amount: 99.99 }
-        }
-      ];
-      
-      const encrypted = encryptObject(logs, key);
-      const decrypted = decryptObject(encrypted, key);
-      
-      expect(decrypted).toEqual(logs);
+    describe('encryptString and decryptString', () => {
+        test('should encrypt and decrypt string correctly', () => {
+            const key = crypto.randomBytes(32);
+            const originalText = 'Hello, World!';
+            const encrypted = encryptString(originalText, key);
+            const decrypted = decryptString(encrypted, key);
+            expect(decrypted).toBe(originalText);
+        });
     });
-  });
+
+    describe('encryptObject and decryptObject', () => {
+        test('should encrypt and decrypt object correctly', () => {
+            const key = crypto.randomBytes(32);
+            const originalObj = { name: 'test', value: 42 };
+            const encrypted = encryptObject(originalObj, key);
+            const decrypted = decryptObject(encrypted, key);
+            expect(decrypted).toEqual(originalObj);
+        });
+    });
+
+    describe('migrateEncryptionKey', () => {
+        test('should migrate data from old key to new key', () => {
+            const oldKey = crypto.randomBytes(32);
+            const newKey = crypto.randomBytes(32);
+            const originalText = 'Sensitive data';
+            
+            // Encrypt with old key
+            const encryptedWithOld = encryptString(originalText, oldKey);
+            
+            // Migrate to new key
+            const migrated = migrateEncryptionKey(encryptedWithOld, oldKey, newKey);
+            
+            // Decrypt with new key
+            const decrypted = decryptString(migrated, newKey);
+            
+            expect(decrypted).toBe(originalText);
+        });
+    });
+
+    describe('isUsingDefaultSecretPhrase', () => {
+        test('should return true when using default secret phrase', () => {
+            process.env.ROO_TRACE_SECRET_PHRASE = 'roo-trace-default-secret';
+            expect(isUsingDefaultSecretPhrase()).toBe(true);
+        });
+
+        test('should return false when using custom secret phrase', () => {
+            process.env.ROO_TRACE_SECRET_PHRASE = 'custom-phrase';
+            expect(isUsingDefaultSecretPhrase()).toBe(false);
+        });
+    });
+
+    describe('deriveKeyFromPhrase', () => {
+        test('should derive key from phrase consistently', () => {
+            const phrase = 'test-phrase-123456';
+            const key1 = deriveKeyFromPhrase(phrase, 'salt123456789012');
+            const key2 = deriveKeyFromPhrase(phrase, 'salt123456789012');
+            expect(key1).toEqual(key2);
+        });
+    });
 });

@@ -235,5 +235,9 @@ export function logDebug(
   context?: string,
   metadata?: Record<string, unknown>
 ): void {
+  // Отключаем вывод отладочных сообщений во время выполнения тестов, чтобы избежать огромного количества логов
+  if (process.env.NODE_ENV === 'test') {
+    return;
+  }
   errorHandler.logDebug(message, context, metadata);
 }

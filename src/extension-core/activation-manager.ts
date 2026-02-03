@@ -18,6 +18,7 @@ import { LogService } from '../services/log-service';
 import { StorageService } from '../services/storage-service';
 import { RoleService } from '../services/role-service';
 import { ensureRootraceInGitignore } from '../rootrace-dir-utils';
+import { validateEncryptionKey } from '../encryption-validator';
 
 /**
  * Интерфейс для конфигурации активации
@@ -58,6 +59,37 @@ export class ActivationManager {
         };
 
         console.log('[ActivationManager] Extension activating...');
+
+        // ВАЖНО: Проверяем ключ шифрования ПЕРЕД инициализацией сервисов
+        try {
+            validateEncryptionKey();
+            console.log('[ActivationManager] Encryption key validated successfully.');
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error('[ActivationManager] Encryption key validation failed:', errorMessage);
+            
+            // Показываем пользователю понятное сообщение об ошибке
+            vscode.window.showErrorMessage(
+                'RooTrace: Ошибка конфигурации шифрования',
+                {
+                    modal: true,
+                    detail: errorMessage
+                }
+            );
+            
+            // Предлагаем открыть документацию с инструкциями
+            const action = await vscode.window.showWarningMessage(
+                'Для продолжения необходимо настроить ключ шифрования. Открыть инструкции?',
+                'Открыть документацию',
+                'Отмена'
+            );
+            
+            if (action === 'Открыть документацию') {
+                vscode.env.openExternal(vscode.Uri.parse('https://github.com/OTumanov/RooTrace#encryption'));
+            }
+            
+            throw new Error(`Encryption key validation failed: ${errorMessage}`);
+        }
 
         // Initialize managers
         if (finalConfig.initializeServices) {

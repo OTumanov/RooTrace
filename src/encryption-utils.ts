@@ -147,9 +147,11 @@ export function generateWorkspaceSalt(): string {
 /**
  * Получает ключ шифрования с уникальным salt для workspace
  * @returns Ключ шифрования
+ * @throws Error если ключ не настроен или недействителен
  */
 export function getEncryptionKey(): Buffer {
   const envKey = process.env.ROO_TRACE_ENCRYPTION_KEY;
+  
   if (envKey) {
     // Если ключ задан в переменной окружения, используем его
     const keyBuffer = Buffer.from(envKey, 'hex');
@@ -157,24 +159,41 @@ export function getEncryptionKey(): Buffer {
       throw new Error(`Invalid encryption key length. Expected ${KEY_LENGTH} bytes.`);
     }
     return keyBuffer;
-  } else {
-    // Используем секретную фразу с уникальным salt
-    const secretPhrase = process.env.ROO_TRACE_SECRET_PHRASE || DEFAULT_SECRET_PHRASE;
-    
-    // Валидация фразы (предупреждение в dev, ошибка в production)
-    validateSecretPhrase(secretPhrase);
-    
-    // Генерируем уникальный salt для workspace
-    const salt = generateWorkspaceSalt();
-    
-    // Используем scrypt с увеличенной стоимостью (N=16384, r=8, p=1)
-    return crypto.scryptSync(secretPhrase, salt, KEY_LENGTH, {
-      N: 16384,
-      r: 8,
-      p: 1,
-      maxmem: 128 * 1024 * 1024 // 128 MB
-    });
   }
+  
+  // Проверяем наличие секретной фразы
+  const secretPhrase = process.env.ROO_TRACE_SECRET_PHRASE;
+  
+  if (!secretPhrase) {
+    throw new Error(
+      'Encryption key is not configured. Please set either ROO_TRACE_ENCRYPTION_KEY or ROO_TRACE_SECRET_PHRASE environment variable.'
+    );
+  }
+  
+  // Проверяем, что не используется дефолтная фраза
+  if (secretPhrase === DEFAULT_SECRET_PHRASE) {
+    throw new Error(
+      'Default secret phrase is not allowed. Please set a secure ROO_TRACE_SECRET_PHRASE environment variable.'
+    );
+  }
+  
+  // Валидация фразы (проверка длины)
+  if (secretPhrase.length < MIN_SECRET_PHRASE_LENGTH) {
+    throw new Error(
+      `Secret phrase must be at least ${MIN_SECRET_PHRASE_LENGTH} characters long.`
+    );
+  }
+  
+  // Генерируем уникальный salt для workspace
+  const salt = generateWorkspaceSalt();
+  
+  // Используем scrypt с увеличенной стоимостью (N=16384, r=8, p=1)
+  return crypto.scryptSync(secretPhrase, salt, KEY_LENGTH, {
+    N: 16384,
+    r: 8,
+    p: 1,
+    maxmem: 128 * 1024 * 1024 // 128 MB
+  });
 }
 
 /**

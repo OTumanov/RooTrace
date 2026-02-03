@@ -63,6 +63,10 @@
       {
         "command": "rooTrace.exportHTML",
         "title": "Export Logs as HTML"
+      },
+      {
+        "command": "rooTrace.migrateEncryptionKey",
+        "title": "Migrate Encryption Key"
       }
     ],
     "configuration": {

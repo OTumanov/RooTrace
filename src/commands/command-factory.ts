@@ -20,6 +20,7 @@ import {
     handleExportMarkdownCommand,
     handleExportHTMLCommand
 } from './command-handlers';
+import { migrateEncryptionKeyCommand } from './migrate-encryption-key';
 
 /**
  * Фабрика команд расширения
@@ -194,6 +195,18 @@ export class CommandFactory {
     }
     
     /**
+     * Создать команду миграции ключа шифрования
+     */
+    public static createMigrateEncryptionKeyCommand(): ExtensionCommand {
+        return {
+            id: 'rooTrace.migrateEncryptionKey',
+            handler: migrateEncryptionKeyCommand,
+            title: 'Migrate Encryption Key',
+            category: 'RooTrace'
+        };
+    }
+    
+    /**
      * Получить все команды расширения
      */
     public static getAllCommands(): ExtensionCommand[] {
@@ -211,7 +224,8 @@ export class CommandFactory {
             this.createExportJSONCommand(),
             this.createExportCSVCommand(),
             this.createExportMarkdownCommand(),
-            this.createExportHTMLCommand()
+            this.createExportHTMLCommand(),
+            this.createMigrateEncryptionKeyCommand()
         ];
     }
 }

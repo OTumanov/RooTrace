@@ -101,6 +101,9 @@ export class SharedLogStorage extends EventEmitter {
   // Кэш размера логов для оптимизации производительности
   private logsSizeCache: number | null = null;
   
+  // Кэш размеров отдельных логов для оптимизации обрезки
+  private logSizeCache: Map<number, number> = new Map();  // индекс лога -> размер в байтах
+  
   // Флаг для отслеживания watcher'а файла
   private isWatcherActive: boolean = false;
   // FSWatcher хэндл (для корректной очистки)
@@ -254,7 +257,15 @@ export class SharedLogStorage extends EventEmitter {
       
       // Пересоздаем индексы и сбрасываем кэш размера
       this.rebuildIndexes();
-      this.logsSizeCache = JSON.stringify(this.logs).length; // Пересчитываем размер после загрузки
+      // Заполняем кэш размеров отдельных логов синхронно (для корректности расчёта)
+      this.logSizeCache.clear();
+      let totalSize = 0;
+      this.logs.forEach((log, index) => {
+        const size = JSON.stringify(log).length;
+        this.logSizeCache.set(index, size);
+        totalSize += size;
+      });
+      this.logsSizeCache = totalSize;
       
       logDebug(`Successfully loaded ${this.logs.length} logs from file, versionId: ${result.metadata.versionId}, version: ${result.metadata.version}, hash valid: ${result.isValid}`, 'SharedLogStorage.loadFromFile');
       
@@ -410,18 +421,39 @@ export class SharedLogStorage extends EventEmitter {
   }
 
   /**
+   * Синхронно вычисляет размер лога в байтах
+   * Использует прямой расчет для оптимизации производительности
+   */
+  private calculateLogSize(log: RuntimeLog): number {
+    return JSON.stringify(log).length;
+  }
+
+  /**
+   * Асинхронно вычисляет общий размер всех логов в байтах
+   * Использует setImmediate для предотвращения блокировки event loop
+   */
+  private async calculateLogsTotalSize(): Promise<number> {
+    return new Promise((resolve) => {
+      setImmediate(() => {
+        const size = JSON.stringify(this.logs).length;
+        resolve(size);
+      });
+    });
+  }
+
+  /**
    * Добавляет лог в хранилище
-   * 
+   *
    * Автоматически обновляет индексы для быстрого поиска и ограничивает размер
    * хранилища согласно настройкам конфигурации. Эмитит событие 'logAdded' для
    * уведомления подписчиков (например, WebSocket клиентов).
-   * 
+   *
    * В режиме Extension (Writer) - сразу сбрасывает данные на диск.
-   * 
+   *
    * БЕЗОПАСНОСТЬ: Проверяет размер логов перед записью для предотвращения DoS атак.
-   * 
+   *
    * @param log - Объект RuntimeLog с данными лога
-   * 
+   *
    * @example
    * ```typescript
    * await storage.addLog({
@@ -435,17 +467,19 @@ export class SharedLogStorage extends EventEmitter {
   async addLog(log: RuntimeLog): Promise<void> {
     logDebug(`addLog called: hypothesisId=${log.hypothesisId}, context=${log.context}`, 'SharedLogStorage.addLog');
     try {
-      // Синхронизируемся перед добавлением (на случай параллельных записей)
-      await this.loadFromFile();
-      logDebug(`After loadFromFile: ${this.logs.length} logs in memory`, 'SharedLogStorage.addLog');
+      // Синхронизируемся перед добавлением только если не было инициализации
+      if (this.logs.length === 0 && this.logSizeCache.size === 0) {
+        await this.loadFromFile();
+        logDebug(`After loadFromFile: ${this.logs.length} logs in memory`, 'SharedLogStorage.addLog');
+      }
       
       // БЕЗОПАСНОСТЬ: Проверяем размер логов перед добавлением (оптимизированная версия)
       const maxLogs = this.getMaxLogs();
       const MAX_LOG_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB лимит
       
       // Вычисляем размер инкрементально для производительности
-      const currentSize = this.logsSizeCache ?? JSON.stringify(this.logs).length;
-      const newLogSize = JSON.stringify(log).length;
+      const currentSize = this.logsSizeCache ?? 0;
+      const newLogSize = this.calculateLogSize(log);
       const estimatedSize = currentSize + newLogSize;
       
       if (estimatedSize > MAX_LOG_SIZE_BYTES) {
@@ -456,22 +490,32 @@ export class SharedLogStorage extends EventEmitter {
         let removeCount = 0;
         let currentSizeAfterRemoval = currentSize;
         
-        while (currentSizeAfterRemoval > targetSize && removeCount < this.logs.length) {
-          const removedLog = this.logs[removeCount];
-          currentSizeAfterRemoval -= JSON.stringify(removedLog).length;
-          removeCount++;
+        // Оптимизированный расчет: сначала вычисляем количество логов для удаления
+        for (let i = 0; i < this.logs.length; i++) {
+          const logSize = this.logSizeCache.get(i) ?? 0;
+          // Удаляем лог, если текущий размер больше целевого
+          if (currentSizeAfterRemoval > targetSize) {
+            currentSizeAfterRemoval -= logSize;
+            removeCount++;
+          } else {
+            break;
+          }
         }
         
         if (removeCount > 0) {
           this.logs = this.logs.slice(removeCount);
           this.logsSizeCache = currentSizeAfterRemoval;
-          this.rebuildIndexes();
+          // Пересоздаем кэш размеров для оставшихся логов
+          this.rebuildIndexes(true); // Сохраняем кэш размеров, но пересчитываем его
           logDebug(`Logs trimmed due to size limit: removed ${removeCount} logs, ${this.logs.length} remaining`, 'SharedLogStorage.addLog');
         }
       }
       
       const index = this.logs.length;
       this.logs.push(log);
+      
+      // Сохраняем размер лога в кэш
+      this.logSizeCache.set(index, newLogSize);
       
       // Обновляем кэш размера инкрементально (newLogSize уже вычислен выше)
       this.logsSizeCache = (this.logsSizeCache ?? 0) + newLogSize;
@@ -495,17 +539,10 @@ export class SharedLogStorage extends EventEmitter {
       if (this.logs.length > maxLogs) {
         const removedCount = this.logs.length - maxLogs;
         // Удаляем старые логи и пересчитываем размер
-        const removedLogs = this.logs.slice(0, removedCount);
         this.logs = this.logs.slice(-maxLogs);
         
-        // Обновляем кэш размера
-        if (this.logsSizeCache !== null) {
-          const removedSize = removedLogs.reduce((sum, log) => sum + JSON.stringify(log).length, 0);
-          this.logsSizeCache -= removedSize;
-        }
-        
-        // Пересоздаем индексы после обрезки
-        this.rebuildIndexes();
+        // Пересоздаем кэш размеров для оставшихся логов (быстрее чем сдвиг)
+        this.rebuildIndexes(false);
       }
       
       // БЕЗОТКАЗНОСТЬ: Сразу сбрасываем на диск (режим Extension - Writer) с MVCC
@@ -525,11 +562,39 @@ export class SharedLogStorage extends EventEmitter {
   }
   
   /**
-   * Пересоздает индексы после обрезки логов
+   * Сдвигает кэш размеров логов после удаления первых removeCount логов
+   * Удаляет записи для индексов 0..removeCount-1 и сдвигает оставшиеся индексы вниз на removeCount
    */
-  private rebuildIndexes(): void {
+  private shiftLogSizeCache(removeCount: number): void {
+    if (removeCount <= 0) return;
+    
+    // Удаляем записи для удалённых логов
+    for (let i = 0; i < removeCount; i++) {
+      this.logSizeCache.delete(i);
+    }
+    
+    // Создаём новый Map с сдвинутыми индексами
+    const newCache = new Map<number, number>();
+    for (let [oldIndex, size] of this.logSizeCache) {
+      const newIndex = oldIndex - removeCount;
+      if (newIndex >= 0) {
+        newCache.set(newIndex, size);
+      }
+    }
+    this.logSizeCache = newCache;
+  }
+
+  /**
+   * Пересоздает индексы после обрезки логов
+   * @param preserveLogSizeCache - если true, кэш размеров логов не очищается (используется когда логи не менялись, только индексы)
+   */
+  private rebuildIndexes(preserveLogSizeCache: boolean = false): void {
     this.hypothesisIndex.clear();
     this.timestampIndex.clear();
+    
+    if (!preserveLogSizeCache) {
+      this.logSizeCache.clear();  // Очищаем кэш размеров
+    }
     
     this.logs.forEach((log, index) => {
       if (!this.hypothesisIndex.has(log.hypothesisId)) {
@@ -546,7 +611,10 @@ export class SharedLogStorage extends EventEmitter {
     });
     
     // Сбрасываем кэш размера при пересоздании индексов (будет пересчитан при следующем addLog)
-    this.logsSizeCache = null;
+    // Но если preserveLogSizeCache = true, то logsSizeCache должен остаться актуальным
+    if (!preserveLogSizeCache) {
+      this.logsSizeCache = null;
+    }
   }
 
   /**
@@ -702,6 +770,7 @@ export class SharedLogStorage extends EventEmitter {
     // Очищаем индексы и кэш размера
     this.hypothesisIndex.clear();
     this.timestampIndex.clear();
+    this.logSizeCache.clear();  // Очищаем кэш размеров отдельных логов
     this.logsSizeCache = 0;
     // Сохраняем определения гипотез, но сбрасываем их состояние
     this.hypotheses.forEach((hypothesis, key) => {
@@ -710,7 +779,7 @@ export class SharedLogStorage extends EventEmitter {
     
     // БЕЗОТКАЗНОСТЬ: Обнуляем файл через блокировку с ЗАМЕНОЙ (не merge!)
     try {
-      await this.saveToFileWithReplace([]);
+      await this.saveToFile([]);
     } catch (error) {
       handleError(error, 'SharedLogStorage.clear');
     }
@@ -773,7 +842,10 @@ export class SharedLogStorage extends EventEmitter {
     this.hypothesisIndex.clear();
     this.timestampIndex.clear();
     
-    // 6. Сбрасываем кэш
+    // 6. Очищаем кэш размеров отдельных логов
+    this.logSizeCache.clear();
+    
+    // 7. Сбрасываем кэш
     this.logsSizeCache = null;
     this.currentVersionId = null;
     
