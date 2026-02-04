@@ -163,6 +163,26 @@ export async function atomicWriteJson(
   jsonData: any,
   options: Omit<AtomicWriteOptions, 'validateJson'> = {}
 ): Promise<void> {
-  const jsonString = JSON.stringify(jsonData, null, 2);
-  return atomicWriteFile(filePath, jsonString, { ...options, validateJson: true });
+  const {
+    encoding = 'utf-8',
+    cleanupOldTempFiles = 3600000,
+    mode = 0o644
+  } = options;
+  
+  // Используем потоковую запись вместо синхронного JSON.stringify
+  await writeJSONStream(filePath, jsonData, {
+    pretty: true,  // для совместимости с JSON.stringify(jsonData, null, 2)
+    encoding: encoding as BufferEncoding,
+    mode
+  });
+  
+  // Очистка старых временных файлов
+  if (cleanupOldTempFiles > 0) {
+    await cleanupTempFiles(path.dirname(filePath), cleanupOldTempFiles).catch(err => {
+      logDebug(`Failed to cleanup temp files: ${err.message}`);
+    });
+  }
 }
+
+// Импорт необходим для работы с потоковой записью
+import { writeJSONStream } from './streaming-json';

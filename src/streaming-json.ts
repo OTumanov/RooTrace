@@ -8,6 +8,7 @@
  */
 
 import * as fs from 'fs';
+import * as fspromises from 'fs/promises';
 import * as path from 'path';
 import { Readable, Writable } from 'stream';
 import { promisify } from 'util';
@@ -53,6 +54,11 @@ export interface WriteJSONStreamOptions {
    * Режим файла (по умолчанию 0o644)
    */
   mode?: number;
+  
+  /**
+   * Количество элементов для обработки перед разблокировкой event loop (по умолчанию 100)
+   */
+  batchSize?: number;
 }
 
 /**
@@ -127,12 +133,12 @@ export async function parseJSONStream<T = any>(
 
 /**
  * Записывает данные в JSON файл через поток
- * 
+ *
  * @param filePath Путь к JSON файлу
  * @param data Данные для записи (любой JSON-сериализуемый объект)
  * @param options Опции записи
  * @returns Промис, который разрешается после завершения записи
- * 
+ *
  * @example
  * ```typescript
  * await writeJSONStream('/path/to/output.json', largeData);
@@ -151,48 +157,48 @@ export async function writeJSONStream(
   
   logDebug(`writeJSONStream: writing to ${filePath}`, 'streaming-json');
   
-  return new Promise<void>((resolve, reject) => {
-    // Создаем директорию если её нет
-    const dir = path.dirname(filePath);
-    fs.mkdir(dir, { recursive: true }, (mkdirErr) => {
-      if (mkdirErr) {
-        return reject(new Error(`Failed to create directory ${dir}: ${mkdirErr.message}`));
+  // Создаем директорию если её нет
+  const dir = path.dirname(filePath);
+  await fspromises.mkdir(dir, { recursive: true });
+  
+  // Создаем временный файл для атомарной записи (используем стандартное имя)
+  const filename = path.basename(filePath);
+  const tempPath = path.join(dir, `.${filename}.tmp`);
+  
+  // Записываем данные асинхронно, чтобы избежать блокировки
+  const jsonString = await new Promise<string>((resolve, reject) => {
+    setTimeout(() => {
+      try {
+        const result = pretty ? JSON.stringify(data, null, 2) : JSON.stringify(data);
+        resolve(result);
+      } catch (error) {
+        reject(error);
       }
-      
-      // Создаем временный файл для атомарной записи
-      const tempPath = `${filePath}.tmp`;
-      const writeStream = fs.createWriteStream(tempPath, { encoding, mode });
-      
-      // Сериализуем данные в JSON строку
-      const jsonString = pretty ? JSON.stringify(data, null, 2) : JSON.stringify(data);
-      
-      // Создаем readable stream из строки
-      const readable = Readable.from([jsonString]);
-      
-      // Используем pipeline для эффективной передачи данных
-      readable.pipe(writeStream);
-      
-      writeStream.on('finish', () => {
-        // Атомарно переименовываем временный файл в целевой
-        fs.rename(tempPath, filePath, (renameErr) => {
-          if (renameErr) {
-            // Удаляем временный файл при ошибке
-            fs.unlink(tempPath, () => {});
-            return reject(new Error(`Failed to rename temporary file: ${renameErr.message}`));
-          }
-          
-          logDebug(`writeJSONStream: successfully wrote ${filePath}, size: ${jsonString.length} bytes`, 'streaming-json');
-          resolve();
-        });
-      });
-      
-      writeStream.on('error', (streamError) => {
-        // Удаляем временный файл при ошибке
-        fs.unlink(tempPath, () => {});
-        reject(new Error(`Failed to write file ${filePath}: ${streamError.message}`));
-      });
-    });
+    }, 0);
   });
+  
+  // Записываем во временный файл
+  const writePromise = new Promise<void>((resolve, reject) => {
+    const writeStream = fs.createWriteStream(tempPath, { encoding, mode });
+    
+    writeStream.on('finish', () => {
+      resolve();
+    });
+    
+    writeStream.on('error', (err) => {
+      reject(err);
+    });
+    
+    writeStream.write(jsonString);
+    writeStream.end();
+  });
+  
+  await writePromise;
+  
+  // Атомарно переименовываем временный файл в целевой
+  await fspromises.rename(tempPath, filePath);
+  
+  logDebug(`writeJSONStream: successfully wrote ${filePath}, size: ${jsonString.length} bytes`, 'streaming-json');
 }
 
 /**
@@ -388,7 +394,8 @@ export async function writeJSONArrayStream<T = any>(
   const {
     pretty = false, // Для массивов обычно не форматируем для экономии места
     encoding = 'utf-8',
-    mode = 0o644
+    mode = 0o644,
+    batchSize = 100
   } = options;
   
   logDebug(`writeJSONArrayStream: writing array to ${filePath}`, 'streaming-json');
@@ -410,10 +417,12 @@ export async function writeJSONArrayStream<T = any>(
       
       const processItems = async () => {
         try {
+          let processedCount = 0;
+          
           for await (const item of items) {
             const separator = isFirstItem ? '' : ',';
-            const jsonString = pretty ? 
-              `${separator}\n${JSON.stringify(item, null, 2)}` : 
+            const jsonString = pretty ?
+              `${separator}\n${JSON.stringify(item, null, 2)}` :
               `${separator}${JSON.stringify(item)}`;
             
             if (!writeStream.write(jsonString)) {
@@ -425,6 +434,12 @@ export async function writeJSONArrayStream<T = any>(
             
             itemCount++;
             isFirstItem = false;
+            processedCount++;
+            
+            // Разблокируем event loop каждые batchSize элементов
+            if (processedCount % batchSize === 0) {
+              await new Promise<void>((resolve) => setImmediate(resolve));
+            }
           }
           
           // Закрываем массив

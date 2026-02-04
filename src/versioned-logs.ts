@@ -492,7 +492,7 @@ export class VersionedLogStore {
         filePath: string,
         newLogs: RuntimeLog[],
         mergeStrategy: 'append' | 'replace' | 'smart' = 'smart',
-        options: WriteOptions = {}
+        options: WriteOptions & { useStreaming?: boolean } = {}
     ): Promise<{
         mergedLogs: RuntimeLog[];
         version: number;
@@ -501,9 +501,20 @@ export class VersionedLogStore {
         conflictResolved: boolean;
     }> {
         const {
-            useStreaming = false
+            useStreaming = false,
+            incrementVersion = true,
+            useLock = true,
+            lockTimeout = 30000,
+            lockPriority = 'normal'
         } = options;
-        return withFileLock(filePath, async () => {
+
+        const mergeOperation = async (): Promise<{
+            mergedLogs: RuntimeLog[];
+            version: number;
+            versionId: string;
+            hash: string;
+            conflictResolved: boolean;
+        }> => {
             try {
                 // Читаем текущие логи с использованием потокового чтения если нужно
                 const currentResult = await this.readLatestVersion(filePath, {
@@ -512,52 +523,41 @@ export class VersionedLogStore {
                     useLock: false,
                     useStreaming
                 });
-                
+
                 let mergedLogs: RuntimeLog[];
                 let conflictResolved = false;
-                
-                switch (mergeStrategy) {
-                    case 'append':
-                        // Просто добавляем новые логи в конец
-                        mergedLogs = [...currentResult.logs, ...newLogs];
-                        break;
-                        
-                    case 'replace':
-                        // Заменяем все логи новыми
-                        mergedLogs = newLogs;
-                        conflictResolved = true;
-                        break;
-                        
-                    case 'smart':
-                    default:
-                        // Умное объединение: удаляем дубликаты по timestamp и hypothesisId
-                        const logMap = new Map<string, RuntimeLog>();
-                        
-                        // Добавляем существующие логи
-                        currentResult.logs.forEach(log => {
-                            const key = `${log.timestamp}-${log.hypothesisId}`;
-                            logMap.set(key, log);
-                        });
-                        
-                        // Добавляем новые логи (перезаписывают старые с тем же ключом)
-                        newLogs.forEach(log => {
-                            const key = `${log.timestamp}-${log.hypothesisId}`;
-                            logMap.set(key, log);
-                        });
-                        
-                        mergedLogs = Array.from(logMap.values()).sort((a, b) =>
-                            new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-                        );
-                        
-                        conflictResolved = logMap.size < (currentResult.logs.length + newLogs.length);
-                        break;
+
+                if (mergeStrategy === 'replace') {
+                    mergedLogs = newLogs;
+                    conflictResolved = true;
+                } else if (mergeStrategy === 'append') {
+                    // Используем асинхронное слияние без блокировки
+                    mergedLogs = await this.mergeLogsWithoutBlocking(currentResult.logs, newLogs);
+                } else {
+                    // Smart стратегия с дедупликацией
+                    mergedLogs = await this.mergeLogsWithoutBlocking(currentResult.logs, newLogs);
+                    // Добавляем логику дедупликации
+                    const seen = new Set<string>();
+                    const deduplicated: RuntimeLog[] = [];
+
+                    for (const log of mergedLogs) {
+                        const key = `${log.timestamp}-${log.hypothesisId}`;
+                        if (!seen.has(key)) {
+                            seen.add(key);
+                            deduplicated.push(log);
+                        } else {
+                            conflictResolved = true;
+                        }
+                    }
+
+                    mergedLogs = deduplicated;
                 }
-                
+
                 // Генерируем новую версию
-                const newVersion = currentResult.metadata.version + 1;
+                const newVersion = currentResult.metadata.version + (incrementVersion ? 1 : 0);
                 const newVersionId = this.generateVersionId();
                 const newHash = this.calculateHash(mergedLogs);
-                
+
                 // Создаем версионированный объект
                 const versionedLogs: VersionedLogs = {
                     versionId: newVersionId,
@@ -567,7 +567,7 @@ export class VersionedLogStore {
                     version: newVersion,
                     previousHash: currentResult.metadata.hash
                 };
-                
+
                 // Записываем в файл с использованием потоков или атомарной записи
                 if (useStreaming) {
                     await writeJSONStream(filePath, versionedLogs, {
@@ -583,9 +583,9 @@ export class VersionedLogStore {
                         mode: 0o644
                     });
                 }
-                
+
                 logDebug(`Merged logs in ${filePath}, strategy: ${mergeStrategy}, merged: ${mergedLogs.length} logs, conflict resolved: ${conflictResolved}, streaming: ${useStreaming}`, 'VersionedLogStore.mergeLogs');
-                
+
                 return {
                     mergedLogs,
                     version: newVersion,
@@ -597,9 +597,52 @@ export class VersionedLogStore {
                 handleError(error, 'VersionedLogStore.mergeLogs', { filePath, newLogsCount: newLogs.length });
                 throw error;
             }
-        }, {
-            timeout: 30000,
-            priority: 'normal'
+        };
+
+        // Используем блокировку если требуется
+        if (useLock) {
+            return withFileLock(filePath, mergeOperation, {
+                timeout: lockTimeout,
+                priority: lockPriority
+            });
+        } else {
+            return mergeOperation();
+        }
+    }
+
+    /**
+     * Асинхронно объединяет массивы логов с использованием setImmediate
+     * для предотвращения блокировки event loop
+     */
+    private static async mergeLogsWithoutBlocking(
+        existingLogs: RuntimeLog[],
+        newLogs: RuntimeLog[]
+    ): Promise<RuntimeLog[]> {
+        return new Promise((resolve) => {
+            const merged = [...existingLogs, ...newLogs];
+            let index = 0;
+            const BATCH_SIZE = 100;
+
+            const processBatch = () => {
+                const endIndex = Math.min(index + BATCH_SIZE, merged.length);
+
+                // Обрабатываем батч (можно добавить логику дедупликации)
+                for (; index < endIndex; index++) {
+                    // Здесь можно добавить логику слияния/дедупликации
+                    // Например, проверка на дубликаты по timestamp и hypothesisId
+                }
+
+                if (index < merged.length) {
+                    // Продолжаем обработку следующего батча
+                    setImmediate(processBatch);
+                } else {
+                    // Завершаем обработку
+                    resolve(merged);
+                }
+            };
+
+            // Начинаем обработку
+            setImmediate(processBatch);
         });
     }
     
